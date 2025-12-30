@@ -2,6 +2,7 @@ import subprocess
 import re
 from InstanceGenerator import generate_DCOP_instance
 from ESOPInstance import ESOPInstance
+import time
 
 def save_dcop_instance(dcop):
     """
@@ -241,7 +242,7 @@ def validate_dcop_functions(dcop_yaml: str) -> bool:
     print("Toutes les fonctions sont valides")
     return True
 
-def solve_dcop(inst):
+def solve_dcop(inst, print_output=True):
     """
     Résout l'instance ESOP en la transformant en instance DCOP puis en utilisant l'algorithme DPOP avec PyDcop.
     """
@@ -250,7 +251,8 @@ def solve_dcop(inst):
     yaml_path = "esop_dcop.yaml"
     
     # Générer le DCOP à partir de l'instance ESOP
-    print("> Génération du DCOP...")
+    if print_output:
+        print("> Génération du DCOP...")
     dcop_yaml = generate_DCOP_instance(inst)
     
     # Vérification pour valider le format yaml, dont les fonctions
@@ -258,30 +260,38 @@ def solve_dcop(inst):
     
     # Sauvegarde du DCOP en yaml pour exécution manuelle, ici on fera appel à la commande dans Python
     save_dcop_instance(dcop_yaml)
-    print(f"> DCOP sauvegardé dans {yaml_path}\n")
+    if print_output:
+        print(f"> DCOP sauvegardé dans {yaml_path}\n")
     
     lines = dcop_yaml.split('\n')
     nb_vars = sum(1 for line in lines if line.strip().startswith('x_'))
     nb_constraints = sum(1 for line in lines if line.strip().startswith('c_'))
-    print(f"> Informations du DCOP:")
+    if print_output:
+        print(f"> Informations du DCOP:")
     print(f"  - Nombre de variables: {nb_vars}")
     print(f"  - Nombre de contraintes: {nb_constraints}\n")
 
     # On résout avec PyDcop et on capture la sortie
-    print("Lancement de DPOP...")
+    if print_output:
+        print("Lancement de DPOP...")
+    time_start = time.time()
     output = run_pydcop_solve(yaml_path, algo="dpop")
+    time_end = time.time()
+    print(f"Temps de résolution DPOP : {time_end - time_start:.4f} secondes\n")
     
     if output is None:
         print("\n!!! Échec de la résolution DCOP.")
         return
     
-    print("> Sortie de DPOP:")
-    print("-" * 50)
-    print(output)
-    print("-" * 50)
+    if print_output:
+        print("> Sortie de DPOP:")
+        print("-" * 50)
+        print(output)
+        print("-" * 50)
 
     # On parse le résultat pour un affichage plus clair.
-    print("\n> Parsing de la solution...")
+    if print_output:
+        print("\n> Parsing de la solution...")
     assignment = parse_assignment_from_output(output)
     
     if not assignment:
@@ -289,6 +299,11 @@ def solve_dcop(inst):
         return
     
     # Résultats
-    print_dcop_metrics(output)
+    if print_output:
+        print_dcop_metrics(output)
     print_assignment_summary(inst, assignment)
     print("=== Fin de la résolution DCOP ===\n")
+
+    # On recrée l'user plan
+    assignment = assignment_to_user_plans(inst, assignment)
+    return assignment

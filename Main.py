@@ -1,6 +1,7 @@
 from InstanceGenerator import *
 from GreedySolver import *
 from DCOP import *
+import time
 
 def greedy_solve(inst):
     """
@@ -47,15 +48,23 @@ def compare_solutions(inst):
     # Solution gloutonne
     print("1. Calcul de la solution gloutonne...")
     user_plans_greedy = {}
+    # Time measure
+    time_start = time.time()
     for user in inst.users:
         user_plans_greedy[user.uid] = greedy_schedule_for_user(inst, user.uid)
+    time_end = time.time()
     scores_greedy = assess_solution(inst, user_plans_greedy)
     score_global_greedy = sum(scores_greedy.values())
+    print("\nPlannings gloutons:")
+    print_user_plans(user_plans_greedy)
+    print(f"   TOTAL : {sum(len(obs) for plan in user_plans_greedy.values() for obs in plan.values())} observations allouées")
     print(f"   Score global (glouton): {score_global_greedy}")
+    print(f"   Temps de calcul (glouton): {time_end - time_start:.4f} secondes")
     
+    print("\n" + "-"*60 + "\n")
     # Solution DCOP
     print("\n2. Calcul de la solution DCOP...")
-    solve_dcop(inst)
+    solve_dcop(inst, print_output=False)
     
     print("\n" + "="*60)
     print("Comparaison terminée")
@@ -70,7 +79,7 @@ if __name__ == '__main__':
     nb_satellites = 3
     nb_users = 5
     nb_tasks = 5
-    seed = 42
+    seed = None
     print("\nGénération de l'instance ESOP...")
     print(f"Paramètres: {nb_satellites} satellites, {nb_users} utilisateurs exclusifs, {nb_tasks} tâches, seed={seed}")
     
@@ -93,7 +102,7 @@ if __name__ == '__main__':
     print("3. Comparaison des deux méthodes")
     
     # résolution DCOP (partie 1 du projet)
-    mode = 2
+    mode = 3
     
     if mode == 1:
         greedy_solve(inst)
