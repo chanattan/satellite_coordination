@@ -106,3 +106,18 @@ class ESOPInstance():
                 f"duration={o.duration} reward={o.reward}"
             )
         return "\n".join(lines)
+
+def assess_solution(instance: ESOPInstance, user_plans: Dict[str, Dict[str, List[Any]]]) -> Dict[str, int]:
+    """
+    Évalue une solution donnée (plannings par utilisateur) et retourne le score total par utilisateur.
+
+    user_plans : dict uid -> dict sid -> list of (Observation, t_start)
+    """
+    scores = {u.uid: 0 for u in instance.users}
+    for uid, plan in user_plans.items():
+        total_reward = 0
+        for sid, observations in plan.items():
+            for obs, t_start in observations:
+                total_reward += obs.reward
+        scores[uid] = total_reward
+    return scores

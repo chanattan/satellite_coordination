@@ -1,0 +1,146 @@
+name: esop_dcop
+objective: min
+domains:
+  binary:
+    values:
+    - 0
+    - 1
+agents:
+- u1
+- u2
+- u3
+- u4
+- u5
+- aux_5
+- aux_6
+- aux_7
+- aux_8
+- aux_9
+- aux_10
+- aux_11
+- aux_12
+- aux_13
+- aux_14
+- aux_15
+- aux_16
+- aux_17
+- aux_18
+- aux_19
+- aux_20
+- aux_21
+- aux_22
+- aux_23
+- aux_24
+- aux_25
+- aux_26
+- aux_27
+- aux_28
+- aux_29
+- aux_30
+- aux_31
+- aux_32
+- aux_33
+variables:
+  x_u2_o_r_0_0:
+    domain: binary
+    agent: u2
+  x_u4_o_r_0_0:
+    domain: binary
+    agent: u4
+  x_u1_o_r_0_1:
+    domain: binary
+    agent: u1
+  x_u2_o_r_0_1:
+    domain: binary
+    agent: u2
+  x_u3_o_r_0_1:
+    domain: binary
+    agent: u3
+  x_u1_o_r_2_1:
+    domain: binary
+    agent: u1
+  x_u5_o_r_2_1:
+    domain: binary
+    agent: u5
+  x_u4_o_r_4_0:
+    domain: binary
+    agent: u4
+  x_u5_o_r_4_0:
+    domain: binary
+    agent: u5
+  x_u4_o_r_4_1:
+    domain: binary
+    agent: u4
+  x_u5_o_r_4_1:
+    domain: binary
+    agent: u5
+constraints:
+  c_atmost1_o_r_0_0:
+    type: intention
+    function: 0 if x_u2_o_r_0_0 + x_u4_o_r_0_0 <= 1 else 1e9
+  c_atmost1_o_r_0_1:
+    type: intention
+    function: 0 if x_u1_o_r_0_1 + x_u2_o_r_0_1 + x_u3_o_r_0_1 <= 1 else 1e9
+  c_atmost1_o_r_2_1:
+    type: intention
+    function: 0 if x_u1_o_r_2_1 + x_u5_o_r_2_1 <= 1 else 1e9
+  c_atmost1_o_r_4_0:
+    type: intention
+    function: 0 if x_u4_o_r_4_0 + x_u5_o_r_4_0 <= 1 else 1e9
+  c_atmost1_o_r_4_1:
+    type: intention
+    function: 0 if x_u4_o_r_4_1 + x_u5_o_r_4_1 <= 1 else 1e9
+  c_cap_u2_s0:
+    type: intention
+    function: 0 if x_u2_o_r_0_0 <= 20 else 1e9
+  c_cap_u4_s0:
+    type: intention
+    function: 0 if x_u4_o_r_0_0 + x_u4_o_r_4_0 + x_u4_o_r_4_1 <= 20 else 1e9
+  c_cap_u1_s2:
+    type: intention
+    function: 0 if x_u1_o_r_0_1 + x_u1_o_r_2_1 <= 20 else 1e9
+  c_cap_u2_s2:
+    type: intention
+    function: 0 if x_u2_o_r_0_1 <= 20 else 1e9
+  c_cap_u3_s2:
+    type: intention
+    function: 0 if x_u3_o_r_0_1 <= 20 else 1e9
+  c_cap_u5_s2:
+    type: intention
+    function: 0 if x_u5_o_r_2_1 <= 20 else 1e9
+  c_cap_u5_s0:
+    type: intention
+    function: 0 if x_u5_o_r_4_0 + x_u5_o_r_4_1 <= 20 else 1e9
+  c_reward_x_u2_o_r_0_0:
+    type: intention
+    function: -6 * x_u2_o_r_0_0
+  c_reward_x_u4_o_r_0_0:
+    type: intention
+    function: -6 * x_u4_o_r_0_0
+  c_reward_x_u1_o_r_0_1:
+    type: intention
+    function: -6 * x_u1_o_r_0_1
+  c_reward_x_u2_o_r_0_1:
+    type: intention
+    function: -6 * x_u2_o_r_0_1
+  c_reward_x_u3_o_r_0_1:
+    type: intention
+    function: -6 * x_u3_o_r_0_1
+  c_reward_x_u1_o_r_2_1:
+    type: intention
+    function: -3 * x_u1_o_r_2_1
+  c_reward_x_u5_o_r_2_1:
+    type: intention
+    function: -3 * x_u5_o_r_2_1
+  c_reward_x_u4_o_r_4_0:
+    type: intention
+    function: -3 * x_u4_o_r_4_0
+  c_reward_x_u5_o_r_4_0:
+    type: intention
+    function: -3 * x_u5_o_r_4_0
+  c_reward_x_u4_o_r_4_1:
+    type: intention
+    function: -3 * x_u4_o_r_4_1
+  c_reward_x_u5_o_r_4_1:
+    type: intention
+    function: -3 * x_u5_o_r_4_1
