@@ -9,10 +9,10 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
     Utilise la syntaxe "expression" directe de pyDCOP pour les contraintes.
     """
 
-    # 1) Agents : tous les utilisateurs exclusifs
+    # Agents : tous les utilisateurs exclusifs
     agents = [u.uid for u in instance.users if u.uid != "u0"]
 
-    # 2) Variables x_{u,o} pour les observations du central
+    # Variables x_{u,o} pour les observations du central
     central_observations = [o for o in instance.observations if o.owner == "u0"]
     exclusives_by_user: Dict[str, List[ExclusiveWindow]] = {
         u.uid: u.exclusive_windows for u in instance.users if u.uid != "u0"
@@ -44,7 +44,7 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
 
     constraints_section = {}
 
-    # (a) at-most-one par observation
+    # au plus une par observation
     for o in central_observations:
         if o.oid not in vars_by_obs:
             continue
@@ -60,7 +60,7 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
             "function": expression
         }
 
-    # (b) capacité par (u, s)
+    # capacité par (u, s)
     sat_capacity = {s.sid: s.capacity for s in instance.satellites}
 
     for (u_id, sat_id), vnames in vars_by_user_sat.items():
@@ -75,7 +75,7 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
             "function": expression
         }
 
-    # (c) reward unaires
+    # rewards unaires
     for v_name in variables_section.keys():
         _, u_id, oid = v_name.split("_", 2)
         o = obs_by_id[oid]
@@ -90,7 +90,7 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
             "function": expression
         }
 
-    # Ajouter agents auxiliaires pour la distribution
+    # Ajouter agents auxiliaires pour la distribution (contrainte PyDcop pour nb agents suffisant)
     nb_vars = len(variables_section)
     nb_constraints = len(constraints_section)
     nb_computations = nb_vars + nb_constraints
@@ -99,7 +99,7 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
     while len(real_agents) < nb_computations:
         real_agents.append(f"aux_{len(real_agents)}")
 
-    # 4) Assemblage du DCOP YAML
+    # DCOP YAML
     dcop_dict = {
         "name": "esop_dcop",
         "objective": "min",
@@ -115,8 +115,6 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
 
     yaml_str = yaml.dump(dcop_dict, sort_keys=False)
     return yaml_str
-
-
 
 def generate_ESOP_instance(nb_satellites: int, nb_users: int, nb_tasks: int, horizon: int = 300, capacity: int = 20, seed: int = None):
     """
@@ -155,7 +153,7 @@ def generate_ESOP_instance(nb_satellites: int, nb_users: int, nb_tasks: int, hor
     exclusive_users = [u for u in users if u.uid != "u0"]
 
     for t_idx in range(nb_tasks):
-        # Owner avec prob. 0.5 pour u0
+        # Owner avec prob. 0.5 pour u0 : à vérifier
         if random.random() < 0.5 or nb_users == 0:
             owner = "u0"
         else:
@@ -189,7 +187,6 @@ def generate_ESOP_instance(nb_satellites: int, nb_users: int, nb_tasks: int, hor
                         o_start = random.randint(win_start, win_end - duration - 1)
                         o_end = o_start + duration + 1
                     else:
-                        # Fallback
                         sat = random.choice(satellites)
                         win_len = random.randint(duration + 1, max(duration + 2, t_end - t_start))
                         o_start = random.randint(t_start, max(t_start, t_end - win_len))

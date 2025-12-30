@@ -12,7 +12,7 @@ def save_dcop_instance(dcop):
 
 def run_pydcop_solve(yaml_path: str, algo: str = "dpop") -> str:
     """
-    Lance `pydcop solve --algo {algo} {yaml_path}` et renvoie stdout sous forme de string.
+    Lance 'pydcop solve --algo {algo} {yaml_path}' et renvoie stdout sous forme de string.
     """
     cmd = ["pydcop", "solve", "--algo", algo, yaml_path]
     try:
