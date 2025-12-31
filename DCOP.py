@@ -477,6 +477,7 @@ def sdcop_with_pydcop(instance: ESOPInstance,
     central_requests.sort(key=lambda r: r.t_end)
 
     assignments_global = []
+    avg_time_per_request = []
 
     for r in central_requests:
         yaml_path = f"{base_yaml_name}_{r.tid}.yaml"
@@ -485,7 +486,10 @@ def sdcop_with_pydcop(instance: ESOPInstance,
         if not ok:
             continue
 
+        time_start = time.time()
         output = run_pydcop_solve(yaml_path, algo=algo)
+        time_end = time.time()
+        avg_time_per_request.append(time_end - time_start)
         if output is None:
             continue
 
@@ -527,7 +531,7 @@ def sdcop_with_pydcop(instance: ESOPInstance,
         if os.path.exists(yaml_path):
             os.remove(yaml_path)
 
-    return final_plans, assignments_global
+    return final_plans, assignments_global, (sum(avg_time_per_request) / len(avg_time_per_request) if avg_time_per_request else 0)
 
 
 def recompute_plan_with_obs(instance, user_id):
