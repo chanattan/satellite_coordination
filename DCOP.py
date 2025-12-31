@@ -188,25 +188,6 @@ def assignment_to_user_plans(instance: ESOPInstance, assignment: dict):
 
     return user_plans
 
-def print_user_plans(user_plans):
-    """
-    Affiche les plannings utilisateurs.
-    """
-    if not user_plans:
-        print("Aucun planning généré.")
-        return
-    
-    for u_id, plan in user_plans.items():
-        print(f"Planning pour l'utilisateur {u_id}:")
-        for sat_id, observations in plan.items():
-            print(f"  Sur le satellite {sat_id}:")
-            for obs, _ in observations:
-                print(f"    > Observation {obs.oid} (reward: {obs.reward})")
-        
-        # Calculer le score total pour cet utilisateur
-        total_reward = sum(obs.reward for sat_obs in plan.values() for obs, _ in sat_obs)
-        print(f"  Score total: {total_reward}\n")
-
 def validate_dcop_functions(dcop_yaml: str) -> bool:
     """
     Tests pour valider que toutes les fonctions du DCOP retournent bien des valeurs.
@@ -307,3 +288,363 @@ def solve_dcop(inst, print_output=True):
     # On recrée l'user plan
     assignment = assignment_to_user_plans(inst, assignment)
     return assignment
+
+from typing import Dict, List, Tuple, Optional
+from GreedySolver import greedy_schedule_for_user
+from ESOPInstance import Observation, Task, ESOPInstance, User
+import yaml
+
+def build_restricted_plan_for_user(instance: ESOPInstance,
+                                   user_id: str,
+                                   extra_obs: Observation,
+                                   accepted_u0_obs):
+    """
+    Construit un plan glouton pour user_id en ne considérant que :
+      - ses propres observations,
+      - + accepted_u0_obs (obs de u0 déjà acceptées),
+      - + extra_obs si non None.
+    Retourne un plan {sat_id: [(obs, t_start), ...]}.
+    """
+
+    user = next(u for u in instance.users if u.uid == user_id)
+    sats = instance.satellites
+
+    # Filtrer les obs pertinentes
+    base_obs = [
+        o for o in instance.observations
+        if (o.owner == user_id) or (o in accepted_u0_obs)
+    ]
+    if extra_obs is not None:
+        base_obs = base_obs + [extra_obs]
+
+    plan = {s.sid: [] for s in sats}
+
+    for sat in sats:
+        sat_id = sat.sid
+        # Observations de cette liste sur ce satellite
+        candidate_obs = [o for o in base_obs if o.satellite == sat_id]
+
+        # Glouton restreint : même logique que greedy_schedule_for_user_on_satellite
+        candidate_obs.sort(key=lambda o: (-o.reward, o.t_start))
+        local_plan = []
+
+        def used_capacity():
+            return len(local_plan)
+
+        def try_insert(obs: Observation):
+            if used_capacity() >= sat.capacity:
+                return None
+            if not local_plan:
+                t0 = max(obs.t_start, sat.t_start)
+                if t0 + obs.duration <= min(obs.t_end, sat.t_end):
+                    return t0
+                return None
+            sorted_plan = sorted(local_plan, key=lambda p: p[1])
+            tau = sat.transition_time
+
+            # avant la première
+            first_obs, first_t = sorted_plan[0]
+            earliest_start = max(obs.t_start, sat.t_start)
+            latest_end = min(obs.t_end, first_t - tau)
+            if earliest_start + obs.duration <= latest_end:
+                return earliest_start
+
+            # entre deux
+            for (o_prev, t_prev), (o_next, t_next) in zip(sorted_plan, sorted_plan[1:]):
+                end_prev = t_prev + o_prev.duration
+                start_next = t_next
+                window_start = max(obs.t_start, end_prev + tau, sat.t_start)
+                window_end = min(obs.t_end, start_next - tau, sat.t_end)
+                if window_start + obs.duration <= window_end:
+                    return window_start
+
+            # après la dernière
+            last_obs, last_t = sorted_plan[-1]
+            end_last = last_t + last_obs.duration
+            window_start = max(obs.t_start, end_last + tau, sat.t_start)
+            window_end = min(obs.t_end, sat.t_end)
+            if window_start + obs.duration <= window_end:
+                return window_start
+            return None
+
+        for obs in candidate_obs:
+            t_ins = try_insert(obs)
+            if t_ins is not None:
+                local_plan.append((obs, t_ins))
+
+        local_plan.sort(key=lambda p: p[1])
+        plan[sat_id] = local_plan
+
+    return plan
+
+
+def compute_reward_from_plan(plan_for_user: dict) -> int:
+    return sum(obs.reward for sat_plan in plan_for_user.values() for (obs, _) in sat_plan)
+
+
+def compute_pi(instance: ESOPInstance,
+               user_id: str,
+               obs: Observation,
+               current_accepted_u0_obs):
+    """
+    π(o, M_u) = coût marginal pour user_id si il accepte obs de u0.
+    M_u est implicite via current_accepted_u0_obs (les requêtes déjà acceptées).
+    """
+
+    # Plan avant : propres obs + accepted_u0_obs
+    plan_before = build_restricted_plan_for_user(instance, user_id, None, current_accepted_u0_obs)
+    reward_before = compute_reward_from_plan(plan_before)
+
+    # Plan après : mêmes + obs
+    plan_after = build_restricted_plan_for_user(instance, user_id, obs, current_accepted_u0_obs)
+    reward_after = compute_reward_from_plan(plan_after)
+
+    if reward_after <= reward_before:
+        return None
+
+    gain = reward_after - reward_before
+    return -gain  # DPOP minimise
+
+def generate_sdcop_yaml_for_request(instance, request, current_accepted, yaml_path):
+    exclusive_users = [u for u in instance.users if u.uid != "u0"]
+    obs_r = [o for o in request.opportunities if o.owner == "u0"]
+
+    variables = {}
+    constraints = {}
+    agents = []
+    var_names = []
+
+    for u in exclusive_users:
+        u_id = u.uid
+        agents.append(u_id)
+        accepted_for_u = current_accepted.get(u_id, [])
+
+        for o in obs_r:
+            can_take = any(
+                w.satellite == o.satellite and
+                not (w.t_end <= o.t_start or w.t_start >= o.t_end)
+                for w in u.exclusive_windows
+            )
+            if not can_take:
+                continue
+
+            pi_val = compute_pi(instance, u_id, o, accepted_for_u)
+            if pi_val is None:
+                continue
+
+            v_name = f"x_{u_id}_{o.oid}"
+            variables[v_name] = {"domain": "binary", "agent": u_id}
+            var_names.append(v_name)
+
+            c_name = f"c_pi_{u_id}_{o.oid}"
+            constraints[c_name] = {
+                "type": "intention",
+                "function": f"{pi_val} * {v_name}"
+            }
+
+    if not var_names:
+        return False
+
+    total_expr = " + ".join(var_names) if len(var_names) > 1 else var_names[0]
+    constraints[f"c_atmost1_{request.tid}"] = {
+        "type": "intention",
+        "function": f"0 if {total_expr} <= 1 else 1e9"
+    }
+
+    dcop_dict = {
+        "name": f"sdcop_{request.tid}",
+        "objective": "min",
+        "domains": {"binary": {"values": [0, 1]}},
+        "agents": agents,
+        "variables": variables,
+        "constraints": constraints
+    }
+
+    with open(yaml_path, "w") as f:
+        yaml.dump(dcop_dict, f, sort_keys=False)
+
+    return True
+
+
+def sdcop_with_pydcop(instance: ESOPInstance,
+                      algo: str = "dpop",
+                      base_yaml_name: str = "sdcop_req"):
+
+    exclusive_users = [u for u in instance.users if u.uid != "u0"]
+    current_accepted: dict[str, list[Observation]] = {u.uid: [] for u in exclusive_users}
+
+    central_requests = [r for r in instance.tasks if r.owner == "u0"]
+    central_requests.sort(key=lambda r: r.t_end)
+
+    assignments_global = []
+
+    for r in central_requests:
+        yaml_path = f"{base_yaml_name}_{r.tid}.yaml"
+
+        ok = generate_sdcop_yaml_for_request(instance, r, current_accepted, yaml_path)
+        if not ok:
+            continue
+
+        output = run_pydcop_solve(yaml_path, algo=algo)
+        if output is None:
+            continue
+
+        assignment = parse_assignment_from_output(output)
+        if not assignment:
+            continue
+
+        for var_name, val in assignment.items():
+            if val != 1:
+                continue
+            try:
+                _, u_id, o_id = var_name.split("_", 2)
+            except ValueError:
+                continue
+
+            try:
+                obs = next(o for o in instance.observations if o.oid == o_id)
+            except StopIteration:
+                continue
+
+            current_accepted[u_id].append(obs)
+            assignments_global.append((r.tid, u_id, obs))
+            break
+
+    # Construire les plans finaux des exclusifs à partir de accepted
+    final_plans = {}
+    for u in exclusive_users:
+        u_id = u.uid
+        final_plans[u_id] = build_restricted_plan_for_user(
+            instance, u_id,
+            extra_obs=None,
+            accepted_u0_obs=current_accepted[u_id]
+        )
+    
+    # Clean les fichiers yaml temporaires
+    import os
+    for r in central_requests:
+        yaml_path = f"{base_yaml_name}_{r.tid}.yaml"
+        if os.path.exists(yaml_path):
+            os.remove(yaml_path)
+
+    return final_plans, assignments_global
+
+
+def recompute_plan_with_obs(instance, user_id):
+    """
+    Recalcule un plan complet pour user_id en relançant le planificateur glouton sur l'instance ESOP.
+    """
+    return greedy_schedule_for_user(instance, user_id)
+
+
+def pi_for_observation(instance, user_id, current_plan):
+    """
+    Calcule pi(o, M_u) = coût marginal (négatif du gain de reward) pour user_id, en replanifiant complètement.
+
+    Retourne None si ça n'apporte aucun gain.
+    """
+
+    reward_before = compute_reward_from_plan(current_plan)
+
+    new_plan = recompute_plan_with_obs(instance, user_id)
+    reward_after = compute_reward_from_plan(new_plan)
+
+    if reward_after <= reward_before:
+        # Aucun gain ou perte -> on ignore cette opportunité
+        return None
+
+    gain = reward_after - reward_before
+    # DCOP minimise le coût -> coût = -gain
+    return -gain
+
+def solve_request_with_dcop_exact(instance, request, current_plans, exclusive_users):
+    """
+    Résout le DCOP pour une requête centrale 'request' (s-dcop simplifié).
+
+    current_plans : {u_id -> {sat_id -> [(obs, t_start), ...]}}
+    exclusive_users : liste des users exclusifs (uid != "u0")
+
+    Retourne (winner_user_id, chosen_observation) ou (None, None).
+    """
+
+    # Opportunités de cette requête (theta_r)
+    observations_r = [o for o in request.opportunities if o.owner == "u0"]
+
+    best_cost = None
+    best_choice: Tuple[Optional[str], Optional[Observation]] = (None, None)
+
+    for obs in observations_r:
+        for u in exclusive_users:
+            u_id = u.uid
+
+            # Vérifier qu'il existe au moins une fenêtre exclusive compatible
+            can_take = any(
+                w.satellite == obs.satellite and
+                not (w.t_end <= obs.t_start or w.t_start >= obs.t_end)
+                for w in u.exclusive_windows
+            )
+            if not can_take:
+                continue
+
+            # Plan courant de u
+            plan_u = current_plans.get(u_id)
+            if plan_u is None:
+                plan_u = greedy_schedule_for_user(instance, u_id)
+                current_plans[u_id] = plan_u
+
+            cost = pi_for_observation(instance, u_id, plan_u)
+            if cost is None:
+                continue
+
+            if best_cost is None or cost < best_cost:
+                best_cost = cost
+                best_choice = (u_id, obs)
+
+    return best_choice
+
+
+def s_dcop_solve(instance):
+    """
+    Implémentation simplifiée de l'algorithme s-dcop (article) en Python pur.
+
+    - On calcule d'abord les plans locaux M_u pour tous les utilisateurs exclusifs.
+    - Pour chaque requête du central (u0), on choisit (u, o) qui maximise
+      le gain de reward via pi(o, M_u).
+    - On met à jour M_u pour le gagnant en replanifiant.
+
+    Retourne :
+      - current_plans : {u_id -> plan utilisateur}
+      - assignments : liste de tuples (request_id, user_id, observation)
+    """
+
+    # Utilisateurs exclusifs
+    exclusive_users = [u for u in instance.users if u.uid != "u0"]
+
+    # Plans initiaux M_u (problèmes P[u])
+    current_plans = {}
+    for u in exclusive_users:
+        current_plans[u.uid] = greedy_schedule_for_user(instance, u.uid)
+
+    # Requêtes du central (u0) triées par deadline
+    central_requests = [r for r in instance.tasks if r.owner == "u0"]
+    central_requests.sort(key=lambda r: r.t_end)
+
+    assignments = []
+
+    for r in central_requests:
+        winner_u, chosen_obs = solve_request_with_dcop_exact(
+            instance,
+            r,
+            current_plans,
+            exclusive_users
+        )
+
+        if winner_u is not None and chosen_obs is not None:
+            # Mettre à jour le plan du gagnant
+            current_plans[winner_u] = greedy_schedule_for_user(instance, winner_u)
+            assignments.append((r.tid, winner_u, chosen_obs))
+
+    return current_plans, assignments
+
+
+
