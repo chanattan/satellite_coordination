@@ -3,6 +3,25 @@ from typing import Dict, List
 import random
 import yaml
 
+def print_user_plans(user_plans):
+    """
+    Affiche les plannings utilisateurs.
+    """
+    if not user_plans:
+        print("Aucun planning généré.")
+        return
+    
+    for u_id, plan in user_plans.items():
+        print(f"Planning pour l'utilisateur {u_id}:")
+        for sat_id, observations in plan.items():
+            print(f"  Sur le satellite {sat_id}:")
+            for obs, _ in observations:
+                print(f"    > Observation {obs.oid} (reward: {obs.reward})")
+        
+        # Calculer le score total pour cet utilisateur
+        total_reward = sum(obs.reward for sat_obs in plan.values() for obs, _ in sat_obs)
+        print(f"  Score total: {total_reward}\n")
+
 def generate_DCOP_instance(instance: ESOPInstance) -> str:
     """
     Génère une instance DCOP à partir d'une instance ESOP donnée.
