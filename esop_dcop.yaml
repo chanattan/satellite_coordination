@@ -9,8 +9,8 @@ agents:
 - u1
 - u2
 - u3
-- u4
-- u5
+- aux_3
+- aux_4
 - aux_5
 - aux_6
 - aux_7
@@ -40,107 +40,275 @@ agents:
 - aux_31
 - aux_32
 - aux_33
+- aux_34
+- aux_35
+- aux_36
+- aux_37
+- aux_38
+- aux_39
+- aux_40
+- aux_41
+- aux_42
+- aux_43
+- aux_44
+- aux_45
+- aux_46
+- aux_47
+- aux_48
+- aux_49
+- aux_50
+- aux_51
+- aux_52
+- aux_53
+- aux_54
+- aux_55
+- aux_56
+- aux_57
+- aux_58
+- aux_59
+- aux_60
+- aux_61
+- aux_62
+- aux_63
+- aux_64
+- aux_65
+- aux_66
+- aux_67
+- aux_68
+- aux_69
+- aux_70
+- aux_71
+- aux_72
+- aux_73
+- aux_74
 variables:
   x_u2_o_r_0_0:
     domain: binary
     agent: u2
-  x_u4_o_r_0_0:
-    domain: binary
-    agent: u4
-  x_u1_o_r_0_1:
-    domain: binary
-    agent: u1
   x_u2_o_r_0_1:
     domain: binary
     agent: u2
-  x_u3_o_r_0_1:
+  x_u3_o_r_0_2:
     domain: binary
     agent: u3
-  x_u1_o_r_2_1:
+  x_u3_o_r_0_3:
+    domain: binary
+    agent: u3
+  x_u1_o_r_1_0:
     domain: binary
     agent: u1
-  x_u5_o_r_2_1:
+  x_u1_o_r_1_1:
     domain: binary
-    agent: u5
-  x_u4_o_r_4_0:
+    agent: u1
+  x_u1_o_r_1_2:
     domain: binary
-    agent: u4
-  x_u5_o_r_4_0:
+    agent: u1
+  x_u1_o_r_1_3:
     domain: binary
-    agent: u5
-  x_u4_o_r_4_1:
+    agent: u1
+  x_u3_o_r_3_0:
     domain: binary
-    agent: u4
-  x_u5_o_r_4_1:
+    agent: u3
+  x_u1_o_r_3_2:
     domain: binary
-    agent: u5
+    agent: u1
+  x_u3_o_r_6_0:
+    domain: binary
+    agent: u3
+  x_u2_o_r_6_1:
+    domain: binary
+    agent: u2
+  x_u2_o_r_12_0:
+    domain: binary
+    agent: u2
+  x_u3_o_r_12_1:
+    domain: binary
+    agent: u3
+  x_u3_o_r_13_0:
+    domain: binary
+    agent: u3
+  x_u1_o_r_13_1:
+    domain: binary
+    agent: u1
+  x_u2_o_r_13_1:
+    domain: binary
+    agent: u2
+  x_u2_o_r_17_0:
+    domain: binary
+    agent: u2
+  x_u1_o_r_18_1:
+    domain: binary
+    agent: u1
+  x_u1_o_r_18_2:
+    domain: binary
+    agent: u1
+  x_u1_o_r_18_3:
+    domain: binary
+    agent: u1
+  x_u3_o_r_19_0:
+    domain: binary
+    agent: u3
+  x_u1_o_r_19_1:
+    domain: binary
+    agent: u1
+  x_u1_o_r_19_3:
+    domain: binary
+    agent: u1
 constraints:
   c_atmost1_o_r_0_0:
     type: intention
-    function: 0 if x_u2_o_r_0_0 + x_u4_o_r_0_0 <= 1 else 1e9
+    function: 0 if x_u2_o_r_0_0 <= 1 else 1e9
   c_atmost1_o_r_0_1:
     type: intention
-    function: 0 if x_u1_o_r_0_1 + x_u2_o_r_0_1 + x_u3_o_r_0_1 <= 1 else 1e9
-  c_atmost1_o_r_2_1:
+    function: 0 if x_u2_o_r_0_1 <= 1 else 1e9
+  c_atmost1_o_r_0_2:
     type: intention
-    function: 0 if x_u1_o_r_2_1 + x_u5_o_r_2_1 <= 1 else 1e9
-  c_atmost1_o_r_4_0:
+    function: 0 if x_u3_o_r_0_2 <= 1 else 1e9
+  c_atmost1_o_r_0_3:
     type: intention
-    function: 0 if x_u4_o_r_4_0 + x_u5_o_r_4_0 <= 1 else 1e9
-  c_atmost1_o_r_4_1:
+    function: 0 if x_u3_o_r_0_3 <= 1 else 1e9
+  c_atmost1_o_r_1_0:
     type: intention
-    function: 0 if x_u4_o_r_4_1 + x_u5_o_r_4_1 <= 1 else 1e9
-  c_cap_u2_s0:
+    function: 0 if x_u1_o_r_1_0 <= 1 else 1e9
+  c_atmost1_o_r_1_1:
     type: intention
-    function: 0 if x_u2_o_r_0_0 <= 20 else 1e9
-  c_cap_u4_s0:
+    function: 0 if x_u1_o_r_1_1 <= 1 else 1e9
+  c_atmost1_o_r_1_2:
     type: intention
-    function: 0 if x_u4_o_r_0_0 + x_u4_o_r_4_0 + x_u4_o_r_4_1 <= 20 else 1e9
-  c_cap_u1_s2:
+    function: 0 if x_u1_o_r_1_2 <= 1 else 1e9
+  c_atmost1_o_r_1_3:
     type: intention
-    function: 0 if x_u1_o_r_0_1 + x_u1_o_r_2_1 <= 20 else 1e9
+    function: 0 if x_u1_o_r_1_3 <= 1 else 1e9
+  c_atmost1_o_r_3_0:
+    type: intention
+    function: 0 if x_u3_o_r_3_0 <= 1 else 1e9
+  c_atmost1_o_r_3_2:
+    type: intention
+    function: 0 if x_u1_o_r_3_2 <= 1 else 1e9
+  c_atmost1_o_r_6_0:
+    type: intention
+    function: 0 if x_u3_o_r_6_0 <= 1 else 1e9
+  c_atmost1_o_r_6_1:
+    type: intention
+    function: 0 if x_u2_o_r_6_1 <= 1 else 1e9
+  c_atmost1_o_r_12_0:
+    type: intention
+    function: 0 if x_u2_o_r_12_0 <= 1 else 1e9
+  c_atmost1_o_r_12_1:
+    type: intention
+    function: 0 if x_u3_o_r_12_1 <= 1 else 1e9
+  c_atmost1_o_r_13_0:
+    type: intention
+    function: 0 if x_u3_o_r_13_0 <= 1 else 1e9
+  c_atmost1_o_r_13_1:
+    type: intention
+    function: 0 if x_u1_o_r_13_1 + x_u2_o_r_13_1 <= 1 else 1e9
+  c_atmost1_o_r_17_0:
+    type: intention
+    function: 0 if x_u2_o_r_17_0 <= 1 else 1e9
+  c_atmost1_o_r_18_1:
+    type: intention
+    function: 0 if x_u1_o_r_18_1 <= 1 else 1e9
+  c_atmost1_o_r_18_2:
+    type: intention
+    function: 0 if x_u1_o_r_18_2 <= 1 else 1e9
+  c_atmost1_o_r_18_3:
+    type: intention
+    function: 0 if x_u1_o_r_18_3 <= 1 else 1e9
+  c_atmost1_o_r_19_0:
+    type: intention
+    function: 0 if x_u3_o_r_19_0 <= 1 else 1e9
+  c_atmost1_o_r_19_1:
+    type: intention
+    function: 0 if x_u1_o_r_19_1 <= 1 else 1e9
+  c_atmost1_o_r_19_3:
+    type: intention
+    function: 0 if x_u1_o_r_19_3 <= 1 else 1e9
   c_cap_u2_s2:
     type: intention
-    function: 0 if x_u2_o_r_0_1 <= 20 else 1e9
-  c_cap_u3_s2:
+    function: 0 if x_u2_o_r_0_0 + x_u2_o_r_0_1 + x_u2_o_r_6_1 + x_u2_o_r_12_0 + x_u2_o_r_13_1
+      + x_u2_o_r_17_0 <= 20 else 1e9
+  c_cap_u3_s1:
     type: intention
-    function: 0 if x_u3_o_r_0_1 <= 20 else 1e9
-  c_cap_u5_s2:
+    function: 0 if x_u3_o_r_0_2 + x_u3_o_r_0_3 + x_u3_o_r_3_0 + x_u3_o_r_6_0 + x_u3_o_r_12_1
+      + x_u3_o_r_13_0 + x_u3_o_r_19_0 <= 20 else 1e9
+  c_cap_u1_s2:
     type: intention
-    function: 0 if x_u5_o_r_2_1 <= 20 else 1e9
-  c_cap_u5_s0:
+    function: 0 if x_u1_o_r_1_0 + x_u1_o_r_1_2 + x_u1_o_r_1_3 + x_u1_o_r_13_1 <= 20
+      else 1e9
+  c_cap_u1_s0:
     type: intention
-    function: 0 if x_u5_o_r_4_0 + x_u5_o_r_4_1 <= 20 else 1e9
+    function: 0 if x_u1_o_r_1_1 + x_u1_o_r_3_2 + x_u1_o_r_18_1 + x_u1_o_r_18_2 + x_u1_o_r_18_3
+      + x_u1_o_r_19_1 + x_u1_o_r_19_3 <= 20 else 1e9
   c_reward_x_u2_o_r_0_0:
     type: intention
-    function: -6 * x_u2_o_r_0_0
-  c_reward_x_u4_o_r_0_0:
-    type: intention
-    function: -6 * x_u4_o_r_0_0
-  c_reward_x_u1_o_r_0_1:
-    type: intention
-    function: -6 * x_u1_o_r_0_1
+    function: -1 * x_u2_o_r_0_0
   c_reward_x_u2_o_r_0_1:
     type: intention
-    function: -6 * x_u2_o_r_0_1
-  c_reward_x_u3_o_r_0_1:
+    function: -1 * x_u2_o_r_0_1
+  c_reward_x_u3_o_r_0_2:
     type: intention
-    function: -6 * x_u3_o_r_0_1
-  c_reward_x_u1_o_r_2_1:
+    function: -1 * x_u3_o_r_0_2
+  c_reward_x_u3_o_r_0_3:
     type: intention
-    function: -3 * x_u1_o_r_2_1
-  c_reward_x_u5_o_r_2_1:
+    function: -1 * x_u3_o_r_0_3
+  c_reward_x_u1_o_r_1_0:
     type: intention
-    function: -3 * x_u5_o_r_2_1
-  c_reward_x_u4_o_r_4_0:
+    function: -1 * x_u1_o_r_1_0
+  c_reward_x_u1_o_r_1_1:
     type: intention
-    function: -3 * x_u4_o_r_4_0
-  c_reward_x_u5_o_r_4_0:
+    function: -1 * x_u1_o_r_1_1
+  c_reward_x_u1_o_r_1_2:
     type: intention
-    function: -3 * x_u5_o_r_4_0
-  c_reward_x_u4_o_r_4_1:
+    function: -1 * x_u1_o_r_1_2
+  c_reward_x_u1_o_r_1_3:
     type: intention
-    function: -3 * x_u4_o_r_4_1
-  c_reward_x_u5_o_r_4_1:
+    function: -1 * x_u1_o_r_1_3
+  c_reward_x_u3_o_r_3_0:
     type: intention
-    function: -3 * x_u5_o_r_4_1
+    function: -8 * x_u3_o_r_3_0
+  c_reward_x_u1_o_r_3_2:
+    type: intention
+    function: -8 * x_u1_o_r_3_2
+  c_reward_x_u3_o_r_6_0:
+    type: intention
+    function: -6 * x_u3_o_r_6_0
+  c_reward_x_u2_o_r_6_1:
+    type: intention
+    function: -6 * x_u2_o_r_6_1
+  c_reward_x_u2_o_r_12_0:
+    type: intention
+    function: -5 * x_u2_o_r_12_0
+  c_reward_x_u3_o_r_12_1:
+    type: intention
+    function: -5 * x_u3_o_r_12_1
+  c_reward_x_u3_o_r_13_0:
+    type: intention
+    function: -10 * x_u3_o_r_13_0
+  c_reward_x_u1_o_r_13_1:
+    type: intention
+    function: -10 * x_u1_o_r_13_1
+  c_reward_x_u2_o_r_13_1:
+    type: intention
+    function: -10 * x_u2_o_r_13_1
+  c_reward_x_u2_o_r_17_0:
+    type: intention
+    function: -4 * x_u2_o_r_17_0
+  c_reward_x_u1_o_r_18_1:
+    type: intention
+    function: -7 * x_u1_o_r_18_1
+  c_reward_x_u1_o_r_18_2:
+    type: intention
+    function: -7 * x_u1_o_r_18_2
+  c_reward_x_u1_o_r_18_3:
+    type: intention
+    function: -7 * x_u1_o_r_18_3
+  c_reward_x_u3_o_r_19_0:
+    type: intention
+    function: -1 * x_u3_o_r_19_0
+  c_reward_x_u1_o_r_19_1:
+    type: intention
+    function: -1 * x_u1_o_r_19_1
+  c_reward_x_u1_o_r_19_3:
+    type: intention
+    function: -1 * x_u1_o_r_19_3
