@@ -1,6 +1,7 @@
 from typing import List, Tuple, Dict
 from ESOPInstance import *
 
+
 def greedy_schedule_for_user_on_satellite(instance: ESOPInstance, user_id: str, satellite_id: str):
     """
     Planifie de manière gloutonne (inspiré de l'algorithme 1 de l'article)
@@ -20,12 +21,13 @@ def greedy_schedule_for_user_on_satellite(instance: ESOPInstance, user_id: str, 
     sat_start = sat.t_start
     sat_end = sat.t_end
 
-    # Trier les observations :
-    #    priorité approximée par reward décroissante, puis date de début croissante
+    # priorité approximée par reward décroissante, puis date de début croissante
     candidate_obs.sort(key=lambda o: (-o.reward, o.t_start))
 
     # liste [(obs, t_start)]
-    plan = []
+    plan: List[Tuple[Observation, int]] = []
+    # ensemble des tâches déjà satisfaites sur ce satellite
+    tasks_satisfied = set()
 
     def used_capacity():
         return len(plan)
@@ -39,57 +41,55 @@ def greedy_schedule_for_user_on_satellite(instance: ESOPInstance, user_id: str, 
         if used_capacity() >= cap:
             return None
 
-        # Si le plan est vide on place au plus tôt
         if not plan:
             t0 = max(obs.t_start, sat_start)
             if t0 + obs.duration <= min(obs.t_end, sat_end):
                 return t0
             return None
 
-        # Plan trié par temps de début
         sorted_plan = sorted(plan, key=lambda p: p[1])
 
         # 1) Trou avant la première observation planifiée
         first_obs, first_t = sorted_plan[0]
-        # On peut démarrer dès le max entre début satellite et fenêtre obs
         earliest_start = max(obs.t_start, sat_start)
-        # Il faut que obs se termine avant le début de la première, moins le temps de transition
         latest_end = min(obs.t_end, first_t - tau)
         if earliest_start + obs.duration <= latest_end:
             return earliest_start
 
-        # Trous entre observations successives
+        # 2) Trous entre observations successives
         for (o_prev, t_prev), (o_next, t_next) in zip(sorted_plan, sorted_plan[1:]):
             end_prev = t_prev + o_prev.duration
             start_next = t_next
 
-            # Début possible : après fin de o_prev + tau, et dans la fenêtre de obs
             window_start = max(obs.t_start, end_prev + tau, sat_start)
-            # Fin possible : avant début de o_next - tau, et dans les fenêtres obs/sat
             window_end = min(obs.t_end, start_next - tau, sat_end)
 
             if window_start + obs.duration <= window_end:
                 return window_start
 
-        # Trou après la dernière observation
+        # 3) Trou après la dernière observation
         last_obs, last_t = sorted_plan[-1]
         end_last = last_t + last_obs.duration
         window_start = max(obs.t_start, end_last + tau, sat_start)
         window_end = min(obs.t_end, sat_end)
-
         if window_start + obs.duration <= window_end:
             return window_start
 
-        # Aucun créneau valide
         return None
 
     for obs in candidate_obs:
+        # nouvelle contrainte : au plus une observation par tâche
+        if obs.task_id in tasks_satisfied:
+            continue
+
         t_insert = try_insert(obs)
         if t_insert is not None:
             plan.append((obs, t_insert))
+            tasks_satisfied.add(obs.task_id)
 
     plan.sort(key=lambda p: p[1])
     return plan
+
 
 def greedy_schedule_for_user(instance: ESOPInstance, user_id: str):
     full_plan = {}
