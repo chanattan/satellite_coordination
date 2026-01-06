@@ -1,108 +1,124 @@
-from typing import List, Tuple, Dict
-from ESOPInstance import *
+from ESOPInstance import ESOPInstance, Observation
 
+def greedy_schedule(instance: ESOPInstance):
+    """
+        Implémentation de l'algorithme 1 (greedy EOSCSP solver) de l'article :
+        - tri global des observations O (reward décroissant, puis t_start croissant),
+        - structure Rs par satellite : liste triée (obs, t_start),
+        - fonction first_slot(o, P, Rs) avec parcours des intervalles,
+        - au plus une observation par requête/tâche.
+        Retour :
+        user_plans[uid][sid] = [(obs, t_start), ...]
+    """
 
-def greedy_schedule_for_user_on_satellite(instance: ESOPInstance, user_id: str, satellite_id: str):
-    candidate_obs = [
-        o for o in instance.observations
-        if o.owner == user_id and o.satellite == satellite_id
-    ]
+    # Résultat final par utilisateur et satellite
+    user_plans = {}
 
-    sat = next(s for s in instance.satellites if s.sid == satellite_id)
-    user = next(u for u in instance.users if u.uid == user_id)
+    # Rs : pour chaque satellite s, liste triée [(obs, t_start)] déjà planifiées sur s
+    Rs = {sat.sid: [] for sat in instance.satellites}
+    sat_by_id = {s.sid: s for s in instance.satellites}
 
-    cap = sat.capacity
-    tau = sat.transition_time
-    sat_start = sat.t_start
-    sat_end = sat.t_end
-
-    candidate_obs.sort(key=lambda o: (-o.reward, o.t_start))
-
-    plan: List[Tuple[Observation, int]] = []
+    # Tri global des observations (remplace Osorted de l'article)
+    Osorted = sorted(instance.observations, key=lambda o: (-o.reward, o.t_start))
+    # Tâches déjà satisfaites (au plus une observation par requête)
     tasks_satisfied = set()
 
-    # fenêtres exclusives pertinentes pour cet utilisateur et ce satellite
-    exclusive_windows = []
-    if user_id != "u0":
-        exclusive_windows = [
-            w for w in user.exclusive_windows
-            if w.satellite == satellite_id
-        ]
+    def first_slot(o: Observation):
+        """
+        Version fidèle de first_slot(o, P, Rs) avec gestion de t_upper.
+        On parcourt les "domaines" possibles de l'observation sur son satellite
+        et on insère o à la position i dans Rs[s] si un créneau valide existe.
+        """
+        s = sat_by_id[o.satellite]
+        sid = s.sid
 
-    def used_capacity():
-        return len(plan)
+        tstart_s = s.t_start
+        tend_s = s.t_end
+        cap = s.capacity
+        tau = s.transition_time
 
-    def in_exclusive_window(t_start, duration):
-        if user_id == "u0":
-            return True  # pas de contrainte pour le central
-        t_end = t_start + duration
-        for w in exclusive_windows:
-            if t_start >= w.t_start and t_end <= w.t_end:
-                return True
-        return False
-
-    def try_insert(obs: Observation):
-        if used_capacity() >= cap:
+        # Capacité déjà atteinte ?
+        if len(Rs[sid]) >= cap:
             return None
 
-        # helper local pour tester un candidat t0
-        def check_t0(t0):
-            if not in_exclusive_window(t0, obs.duration):
-                return None
-            return t0
+        plan_s = Rs[sid]  # déjà trié par t_start
 
-        if not plan:
-            t0 = max(obs.t_start, sat_start)
-            if t0 + obs.duration <= min(obs.t_end, sat_end):
-                return check_t0(t0)
+        # Si le satellite n'a encore rien planifié, on regarde le segment [tstart_s, tend_s]
+        if not plan_s:
+            # t_start candidat = max(horizon sat, fenêtre obs)
+            t0 = max(tstart_s, o.t_start)
+            if t0 + o.duration <= min(tend_s, o.t_end):
+                # pas de conflit ni transition à gérer, on insère à la fin
+                plan_s.append((o, t0))
+                return t0
             return None
 
-        sorted_plan = sorted(plan, key=lambda p: p[1])
+        # avant la première observation
+        # On considère le domaine [tstart_s, t_end_first - tau]
+        first_obs, first_t = plan_s[0]
+        t_end_first = first_t
+        # borne supérieure de ce domaine
+        t_upper = t_end_first
+        # fenêtre disponible = [tstart_s, t_upper - tau] pour le début d'o
+        if tstart_s < t_upper:
+            t0 = max(tstart_s, o.t_start)
+            if t0 + o.duration <= min(o.t_end, t_upper - tau, tend_s):
+                # insert en tête (i = 0)
+                plan_s.insert(0, (o, t0))
+                return t0
 
-        # 1) trou avant la première obs
-        first_obs, first_t = sorted_plan[0]
-        earliest_start = max(obs.t_start, sat_start)
-        latest_end = min(obs.t_end, first_t - tau)
-        if earliest_start + obs.duration <= latest_end:
-            return check_t0(earliest_start)
+        # Domaines entre les observations successives
+        # plan_s est trié, on regarde les intervalles entre (oi, ti) et (oi+1, ti+1)
+        for i in range(len(plan_s) - 1):
+            o_i, t_i = plan_s[i]
+            o_ip1, t_ip1 = plan_s[i + 1]
 
-        # 2) trous entre obs successives
-        for (o_prev, t_prev), (o_next, t_next) in zip(sorted_plan, sorted_plan[1:]):
-            end_prev = t_prev + o_prev.duration
-            start_next = t_next
+            # début du domaine = fin de o_i + tau
+            domain_start = t_i + o_i.duration + tau
+            # t_upper = début de o_{i+1}
+            t_upper = t_ip1
 
-            window_start = max(obs.t_start, end_prev + tau, sat_start)
-            window_end = min(obs.t_end, start_next - tau, sat_end)
+            if domain_start < t_upper - tau:
+                # fenêtre possible pour le début de o
+                t0 = max(domain_start, o.t_start)
+                if t0 + o.duration <= min(o.t_end, t_upper - tau, tend_s):
+                    # insérer o à la position i+1 (juste après o_i)
+                    plan_s.insert(i + 1, (o, t0))
+                    return t0
 
-            if window_start + obs.duration <= window_end:
-                return check_t0(window_start)
+        # Domaine après la dernière observation
+        o_last, t_last = plan_s[-1]
+        domain_start = t_last + o_last.duration + tau
+        # dernier domaine = [domain_start, tend_s]
+        if domain_start < tend_s:
+            t0 = max(domain_start, o.t_start)
+            if t0 + o.duration <= min(o.t_end, tend_s):
+                # insérer à la fin
+                plan_s.append((o, t0))
+                return t0
 
-        # 3) après la dernière obs
-        last_obs, last_t = sorted_plan[-1]
-        end_last = last_t + last_obs.duration
-        window_start = max(obs.t_start, end_last + tau, sat_start)
-        window_end = min(obs.t_end, sat_end)
-        if window_start + obs.duration <= window_end:
-            return check_t0(window_start)
-
+        # Aucun créneau
         return None
 
-    for obs in candidate_obs:
-        if obs.task_id in tasks_satisfied:
+    # boucle principale
+    for o in Osorted:
+        # au plus une observation par tâche
+        if o.task_id in tasks_satisfied:
             continue
 
-        t_insert = try_insert(obs)
-        if t_insert is not None:
-            plan.append((obs, t_insert))
-            tasks_satisfied.add(obs.task_id)
+        t = first_slot(o)
+        if t is None:
+            continue
 
-    plan.sort(key=lambda p: p[1])
-    return plan
+        # marquer la tâche comme satisfaite
+        tasks_satisfied.add(o.task_id)
 
+        # remplir user_plans pour évaluation
+        user_plans.setdefault(o.owner, {}).setdefault(o.satellite, []).append((o, t))
 
+    # Tri par temps de début dans la sortie
+    for uid in user_plans:
+        for sid in user_plans[uid]:
+            user_plans[uid][sid].sort(key=lambda p: p[1])
 
-def greedy_schedule_for_user(instance: ESOPInstance, user_id: str):
-    full_plan = {}
-    for sat in instance.satellites:
-        full_plan[sat.sid] = greedy_schedule_for_user_on_satellite(instance, user_id, sat.sid)
-    return full_plan
+    return user_plans
