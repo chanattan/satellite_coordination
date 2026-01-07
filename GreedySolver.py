@@ -1,4 +1,45 @@
-from ESOPInstance import ESOPInstance, Observation
+from ESOPInstance import ESOPInstance, Observation, Task
+
+
+def greedy_schedule_P_u(instance: ESOPInstance, user_id: str):
+    """
+    Résout P_u avec l'algorithme glouton pour un utilisateur donné :
+
+    P_u = <S, U, R_u, O_u>
+      - S : mêmes satellites que l'instance globale
+      - U : on peut garder tous les users ou seulement u (ici on garde juste u, car
+            les autres n'interviennent pas dans le solve local)
+      - R_u : tâches dont le owner est u
+      - O_u : observations dont le owner est u
+
+    Retourne un plan {sat_id: [(obs, t_start), ...]} pour user_id.
+    """
+
+    # Utilisateur u
+    u = next(user for user in instance.users if user.uid == user_id)
+
+    # R_u : tâches de u
+    tasks_u: list[Task] = [t for t in instance.tasks if t.owner == user_id]
+
+    # O_u : observations de u
+    obs_u: list[Observation] = [o for o in instance.observations if o.owner == user_id]
+
+    # Sous-instance P_u (mêmes satellites et horizon)
+    inst_u = ESOPInstance(
+        nb_satellites=instance.nb_satellites,
+        nb_users=1,  # nombre d'utilisateurs exclusifs dans cette sous-instance (ici juste u)
+        nb_tasks=len(tasks_u),
+        horizon=instance.horizon,
+        satellites=instance.satellites,
+        users=[u],          # on ne garde que u ici, suffisant pour le solve local
+        tasks=tasks_u,
+        observations=obs_u,
+    )
+    all_plans_u = greedy_schedule(inst_u)
+
+    # On ne récupère que le plan de u
+    return all_plans_u.get(user_id, {})
+
 
 def greedy_schedule(instance: ESOPInstance):
     """

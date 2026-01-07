@@ -125,92 +125,104 @@ def assess_solution(instance: ESOPInstance, user_plans: Dict[str, Dict[str, List
 from typing import Dict, List, Tuple, Any
 
 
-def estRealisable(instance: ESOPInstance,
-                  user_plans: Dict[str, Dict[str, List[Tuple[Observation, int]]]]) -> bool:
+from typing import Dict, List, Tuple
+from ESOPInstance import ESOPInstance, Observation
+
+
+def estRealisable(
+    instance: ESOPInstance,
+    user_plans: Dict[str, Dict[str, List[Tuple[Observation, int]]]]
+) -> bool:
     """
     Vérifie si un ensemble de plannings user_plans est réalisable pour l'instance donnée.
 
     user_plans : dict uid -> dict sid -> list of (Observation, t_start)
-    Retourne True si toutes les contraintes simples sont respectées, False sinon.
+    Retourne True si toutes les contraintes sont respectées, False sinon.
     """
 
     ok = True
 
-    # Index utiles
     sats_by_id = {s.sid: s for s in instance.satellites}
     users_by_id = {u.uid: u for u in instance.users}
 
-    # 1) Unicité : une observation ne doit pas être planifiée plus d'une fois dans tout le système
+    # 0) Unicité des observations + au plus une obs par requête
     used_obs = set()
+    used_tasks = set()
     for uid, plan in user_plans.items():
         for sid, obs_list in plan.items():
             for obs, t_start in obs_list:
+                # unicité objet Observation
                 if obs in used_obs:
                     print(f"[ERREUR] Observation {obs.oid} planifiée plusieurs fois.")
                     ok = False
                 used_obs.add(obs)
 
-    # 2) Contraintes par utilisateur / satellite
+                # au plus une observation par requête / tâche
+                if obs.task_id in used_tasks:
+                    print(f"[ERREUR] Task {obs.task_id} satisfaite par plusieurs observations.")
+                    ok = False
+                used_tasks.add(obs.task_id)
+
+    # 1) Capacité globale, délais, fenêtres et transitions, par satellite
+    for sid, sat in sats_by_id.items():
+        # rassembler toutes les obs planifiées sur ce sat (tous utilisateurs confondus)
+        all_obs_on_sat: List[Tuple[Observation, int, str]] = [
+            (obs, t_start, uid)
+            for uid, plan in user_plans.items()
+            for s2, obs_list in plan.items()
+            if s2 == sid
+            for (obs, t_start) in obs_list
+        ]
+
+        # capacité globale
+        if len(all_obs_on_sat) > sat.capacity:
+            print(f"[ERREUR] Capacité globale dépassée sur {sid}: "
+                  f"{len(all_obs_on_sat)} > {sat.capacity}")
+            ok = False
+
+        # tri par temps de début
+        all_obs_on_sat.sort(key=lambda p: p[1])
+
+        # fenêtres / horizon + transitions globales
+        tau = sat.transition_time
+        for i, (obs, t_start, uid) in enumerate(all_obs_on_sat):
+            t_end = t_start + obs.duration
+
+            # horizon satellite
+            if t_start < sat.t_start or t_end > sat.t_end:
+                print(f"[ERREUR] {uid} / {sid} : {obs.oid} sort de l'horizon sat "
+                      f"[{sat.t_start},{sat.t_end}] avec [{t_start},{t_end}].")
+                ok = False
+
+            # fenêtre observation
+            if t_start < obs.t_start or t_end > obs.t_end:
+                print(f"[ERREUR] {uid} / {sid} : {obs.oid} hors de sa fenêtre "
+                      f"[{obs.t_start},{obs.t_end}] avec [{t_start},{t_end}].")
+                ok = False
+
+            # transition avec l'observation suivante (globale)
+            if i < len(all_obs_on_sat) - 1:
+                obs2, t2, uid2 = all_obs_on_sat[i + 1]
+                end1 = t_end
+                if end1 + tau > t2:
+                    print(f"[ERREUR] Transition insuffisante sur {sid} "
+                          f"entre {obs.oid} ({uid}) [{t_start},{end1}] "
+                          f"et {obs2.oid} ({uid2}) commençant à t={t2} "
+                          f"(tau={tau}).")
+                    ok = False
+
+    # 2) Fenêtres d'exclusivité pour utilisateurs exclusifs (uid != "u0")
     for uid, plan in user_plans.items():
+        if uid == "u0":
+            continue  # le central peut utiliser les portions non exclusives
+
         user = users_by_id.get(uid)
         if user is None:
-            print(f"[ERREUR] Utilisateur inconnu: {uid}")
+            print(f"[ERREUR] Utilisateur inconnu (dans exclusifs) : {uid}")
             ok = False
             continue
 
         for sid, obs_list in plan.items():
-            sat = sats_by_id.get(sid)
-            if sat is None:
-                print(f"[ERREUR] Satellite inconnu: {sid}")
-                ok = False
-                continue
-
-            # Capacité
-            if len(obs_list) > sat.capacity:
-                print(f"[ERREUR] Capacité dépassée sur {sid} pour {uid}: "
-                      f"{len(obs_list)} > {sat.capacity}")
-                ok = False
-
-            # Tri par temps de début
-            obs_list_sorted = sorted(obs_list, key=lambda p: p[1])
-
-            # Vérité fenêtre observation + horizon satellite
-            for obs, t_start in obs_list_sorted:
-                t_end = t_start + obs.duration
-
-                if t_start < sat.t_start or t_end > sat.t_end:
-                    print(f"[ERREUR] {uid} / {sid} : {obs.oid} sort de l'horizon du satellite "
-                          f"[{sat.t_start},{sat.t_end}] avec [{t_start},{t_end}].")
-                    ok = False
-
-                if t_start < obs.t_start or t_end > obs.t_end:
-                    print(f"[ERREUR] {uid} / {sid} : {obs.oid} hors de sa fenêtre "
-                          f"[{obs.t_start},{obs.t_end}] avec [{t_start},{t_end}].")
-                    ok = False
-
-            # Non-chevauchement + temps de transition
-            tau = sat.transition_time
-            for (obs1, t1), (obs2, t2) in zip(obs_list_sorted, obs_list_sorted[1:]):
-                end1 = t1 + obs1.duration
-                # on impose end1 + tau <= t2
-                if end1 + tau > t2:
-                    print(f"[ERREUR] {uid} / {sid} : transition insuffisante entre "
-                          f"{obs1.oid} [{t1},{end1}] et {obs2.oid} commençant à t={t2} "
-                          f"(tau={tau}).")
-                    ok = False
-
-    # 3) Fenêtres d'exclusivité des utilisateurs exclusifs (uid != "u0")
-    for uid, plan in user_plans.items():
-        if uid == "u0":
-            continue  # le central n'a pas d'exclusives
-
-        user = users_by_id.get(uid)
-        if user is None:
-            continue
-
-        for sid, obs_list in plan.items():
-            # Toutes les obs planifiées par cet utilisateur sur ce sat
-            # doivent être dans au moins une de ses exclusive_windows
             for obs, t_start in obs_list:
                 t_end = t_start + obs.duration
                 in_excl = any(

@@ -290,7 +290,7 @@ def solve_dcop(inst, print_output=True):
     return assignment
 
 from typing import Dict, List, Tuple, Optional
-from GreedySolver import greedy_schedule_for_user
+from GreedySolver import greedy_schedule_P_u as greedy_schedule_for_user
 from ESOPInstance import Observation, Task, ESOPInstance, User
 import yaml
 
@@ -466,7 +466,7 @@ def generate_sdcop_yaml_for_request(instance, request, current_accepted, yaml_pa
     return True
 
 
-def sdcop_with_pydcop(instance: ESOPInstance,
+def __sdcop_with_pydcop(instance: ESOPInstance,
                       algo: str = "dpop",
                       base_yaml_name: str = "sdcop_req"):
 
