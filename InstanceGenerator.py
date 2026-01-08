@@ -148,7 +148,7 @@ def generate_ESOP_instance(
     capacity: int = 20,
     seed: int = None,
     scenario: str = "generic",   # "generic", "small_scale", "large_scale",
-    one_exclusive_window_per_satellite=False
+    one_exclusive_window_per_satellite=False # si True, chaque utilisateur exclusif a au plus une exclusive par satellite
 ) -> ESOPInstance:
     """
     Génère une instance ESOP fidèle au modèle de l'article.
@@ -166,6 +166,9 @@ def generate_ESOP_instance(
       - "generic"     : valeurs par défaut raisonnables.
       - "small_scale" : proche des "highly conflicting small-scale problems".
       - "large_scale" : proche des "realistic large-scale problems".
+    
+    Le paramètre one_exclusive_window_per_satellite permet de forcer au plus une fenêtre exclusive par satellite.
+    Cette hypothèse implique que chaque utilisateur a au plus 1 fenêtre exclusive (à vérifier).
     """
 
     if seed is not None:
@@ -235,6 +238,9 @@ def generate_ESOP_instance(
         REWARD_CENTRAL_RANGE = (1, 10)
 
         PROB_U0_IN_EXCLUSIVE = 0.7
+    
+    if one_exclusive_window_per_satellite:
+        EXCL_WINDOWS_PER_USER = 1
 
     # ------------------------------------------------------------------
     # 1) Satellites
