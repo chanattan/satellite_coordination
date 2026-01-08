@@ -167,8 +167,7 @@ def generate_ESOP_instance(
       - "small_scale" : proche des "highly conflicting small-scale problems".
       - "large_scale" : proche des "realistic large-scale problems".
     
-    Le paramètre one_exclusive_window_per_satellite permet de forcer au plus une fenêtre exclusive par satellite.
-    Cette hypothèse implique que chaque utilisateur a au plus 1 fenêtre exclusive (à vérifier).
+    Le paramètre one_exclusive_window_per_satellite permet de forcer au plus une un utilisateur exclusif par satellite.
     """
 
     if seed is not None:
@@ -238,9 +237,6 @@ def generate_ESOP_instance(
         REWARD_CENTRAL_RANGE = (1, 10)
 
         PROB_U0_IN_EXCLUSIVE = 0.7
-    
-    if one_exclusive_window_per_satellite:
-        EXCL_WINDOWS_PER_USER = 1
 
     # ------------------------------------------------------------------
     # 1) Satellites
@@ -257,31 +253,83 @@ def generate_ESOP_instance(
             )
         )
 
-    # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
     # 2) Utilisateurs
     # ------------------------------------------------------------------
     users: List[User] = []
     users.append(User(uid="u0", exclusive_windows=[]))  # central
-    taken_sats = set()
+    attributed_sats = dict()  # pour one_exclusive_window_per_satellite
+
+    # pour garantir l'absence d'overlap des exclusives sur un même satellite,
+    # on garde pour chaque sat la liste des intervalles déjà utilisés
+    excl_by_sat: Dict[str, List[Tuple[int, int]]] = {s.sid: [] for s in satellites}
+
+    def sample_non_overlapping_interval(sid: str, length_range: Tuple[int, int]):
+        """
+        Tente de générer une fenêtre [start, end] sur le satellite sid qui ne chevauche aucune fenêtre déjà présente dans excl_by_sat[sid].
+        Retourne (start, end) ou None si on n'y arrive pas après quelques essais.
+        """
+        existing = excl_by_sat[sid]
+        # si aucun intervalle, on place librement
+        if not existing:
+            length = random.randint(*length_range)
+            start = random.randint(0, max(0, horizon - length))
+            end = start + length
+            return (start, end)
+
+        # on essaie quelques placements aléatoires compatibles
+        for _ in range(20):
+            length = random.randint(*length_range)
+            start = random.randint(0, max(0, horizon - length))
+            end = start + length
+            if all(end <= s0 or start >= s1 for (s0, s1) in existing):
+                return (start, end)
+        # échec : on abandonne cette fenêtre
+        return None
 
     for u_idx in range(nb_users):
         uid = f"u{u_idx+1}"
         exclusive_windows: List[ExclusiveWindow] = []
 
-        for _ in range(EXCL_WINDOWS_PER_USER):
-            try:
-                sat = random.choice([s for s in satellites if s.sid not in taken_sats] if one_exclusive_window_per_satellite else satellites)
-            except IndexError:
-                # toutes les satellites ont une exclusive pour cet utilisateur
-                break
-            length = random.randint(*EXCL_WINDOW_LENGTH_RANGE)
-            start = random.randint(0, max(0, horizon - length))
-            end = start + length
-            exclusive_windows.append(
-                ExclusiveWindow(satellite=sat.sid, t_start=start, t_end=end)
-            )
-            if one_exclusive_window_per_satellite:
-                taken_sats.add(sat.sid)
+        if one_exclusive_window_per_satellite:
+            taken_sats = attributed_sats.get(uid, None)
+            if taken_sats is not None:  # cet utilisateur a déjà un satellite attribué
+                sat = next(s for s in satellites if s.sid == attributed_sats[uid])
+            else:
+                available_sats = [s for s in satellites if s.sid not in attributed_sats.values()]
+                if not available_sats:
+                    # plus de satellites disponibles pour des exclusives
+                    users.append(User(uid=uid, exclusive_windows=[]))
+                    continue
+                sat = random.choice(available_sats)
+                attributed_sats[uid] = sat.sid
+
+            # toutes les fenêtres de cet utilisateur seront sur ce satellite,
+            # en s'assurant qu'elles ne se chevauchent pas entre elles
+            for _ in range(EXCL_WINDOWS_PER_USER):
+                interval = sample_non_overlapping_interval(sat.sid, EXCL_WINDOW_LENGTH_RANGE)
+                if interval is None:
+                    # pas possible de placer plus de fenêtres sur ce sat
+                    break
+                start, end = interval
+                exclusive_windows.append(
+                    ExclusiveWindow(satellite=sat.sid, t_start=start, t_end=end)
+                )
+                excl_by_sat[sat.sid].append((start, end))
+        else:
+            # cas général : l'utilisateur peut avoir plusieurs satellites,
+            # mais les exclusives ne doivent pas se chevaucher sur un même sat
+            for _ in range(EXCL_WINDOWS_PER_USER):
+                sat = random.choice(satellites)
+                interval = sample_non_overlapping_interval(sat.sid, EXCL_WINDOW_LENGTH_RANGE)
+                if interval is None:
+                    # impossible de placer une nouvelle fenêtre sur ce sat sans chevauchement
+                    continue
+                start, end = interval
+                exclusive_windows.append(
+                    ExclusiveWindow(satellite=sat.sid, t_start=start, t_end=end)
+                )
+                excl_by_sat[sat.sid].append((start, end))
 
         users.append(User(uid=uid, exclusive_windows=exclusive_windows))
 
@@ -337,27 +385,50 @@ def generate_ESOP_instance(
                     # cas limite théorique -> on saute
                     continue
 
-                windows = u_owner.exclusive_windows[:]
-                random.shuffle(windows)
-                placed = False
-                sat: Satellite | None = None
+                # on décide si cette opportunité sera dans une exclusive
+                # ou hors exclusives (mais sans overlap partiel)
+                make_in_exclusive = random.random() < 0.5  # ratio simple, modifiable
 
-                for w in windows:
-                    sat = next(s for s in satellites if s.sid == w.satellite)
+                if make_in_exclusive:
+                    windows = u_owner.exclusive_windows[:]
+                    random.shuffle(windows)
+                    placed = False
+                    sat: Satellite | None = None
 
-                    # intersection de la fenêtre de la requête et de l'exclusive
-                    win_start = max(t_start, w.t_start)
-                    win_end = min(t_end, w.t_end)
+                    for w in windows:
+                        sat = next(s for s in satellites if s.sid == w.satellite)
+                        # intersection de la fenêtre de la requête et de l'exclusive
+                        win_start = max(t_start, w.t_start)
+                        win_end = min(t_end, w.t_end)
+                        # fenêtre obs incluse dans l'exclusive
+                        if win_end - win_start >= duration + 1:
+                            o_start = random.randint(win_start, win_end - duration - 1)
+                            o_end = o_start + duration + 1
+                            placed = True
+                            break
 
-                    if win_end - win_start >= duration + 1:
-                        o_start = random.randint(win_start, win_end - duration - 1)
-                        o_end = o_start + duration + 1
-                        placed = True
-                        break
-
-                if not placed:
-                    # aucune exclusive ne peut accueillir cette opportunité
-                    continue
+                    if not placed:
+                        # bascule en "hors exclusive" proprement
+                        sat = random.choice(satellites)
+                        win_len = random.randint(
+                            duration + 1,
+                            max(duration + 2, t_end - t_start),
+                        )
+                        o_start = random.randint(
+                            t_start, max(t_start, t_end - win_len)
+                        )
+                        o_end = min(t_end, o_start + win_len)
+                else:
+                    # opportunité d'un exclusif HORS de toute exclusive
+                    sat = random.choice(satellites)
+                    win_len = random.randint(
+                        duration + 1,
+                        max(duration + 2, t_end - t_start),
+                    )
+                    o_start = random.randint(
+                        t_start, max(t_start, t_end - win_len)
+                    )
+                    o_end = min(t_end, o_start + win_len)
 
             # ---------- Cas 2 : requête du central u0 ----------------------
             else:
@@ -433,16 +504,7 @@ def generate_ESOP_instance(
         observations=observations,
     )
 
-    # Sanity check : toutes les obs d'exclusifs sont dans leurs exclusives
-    for o in instance.observations:
-        if o.owner == "u0":
-            continue
-        u = next(u for u in instance.users if u.uid == o.owner)
-        assert any(
-            w.satellite == o.satellite and
-            o.t_start >= w.t_start and
-            o.t_end   <= w.t_end
-            for w in u.exclusive_windows
-        ), f"{o.oid} de {o.owner} hors exclusive"
+    # Ici, on ne garde plus le sanity check "toutes les obs d'exclusifs sont dans leurs exclusives"
+    # puisque, par construction, certaines obs d'exclusifs peuvent être hors exclusives.
 
     return instance
