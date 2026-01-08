@@ -253,7 +253,7 @@ def generate_ESOP_instance(
             )
         )
 
-        # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # 2) Utilisateurs
     # ------------------------------------------------------------------
     users: List[User] = []
@@ -385,50 +385,27 @@ def generate_ESOP_instance(
                     # cas limite théorique -> on saute
                     continue
 
-                # on décide si cette opportunité sera dans une exclusive
-                # ou hors exclusives (mais sans overlap partiel)
-                make_in_exclusive = random.random() < 0.5  # ratio simple, modifiable
+                # toutes les opportunités d'un exclusif doivent être dans UNE de ses exclusives
+                windows = u_owner.exclusive_windows[:]
+                random.shuffle(windows)
+                placed = False
+                sat: Satellite | None = None
 
-                if make_in_exclusive:
-                    windows = u_owner.exclusive_windows[:]
-                    random.shuffle(windows)
-                    placed = False
-                    sat: Satellite | None = None
+                for w in windows:
+                    sat = next(s for s in satellites if s.sid == w.satellite)
+                    # intersection de la fenêtre de la requête et de l'exclusive
+                    win_start = max(t_start, w.t_start)
+                    win_end = min(t_end, w.t_end)
+                    # fenêtre obs incluse dans l'exclusive
+                    if win_end - win_start >= duration + 1:
+                        o_start = random.randint(win_start, win_end - duration - 1)
+                        o_end = o_start + duration + 1
+                        placed = True
+                        break
 
-                    for w in windows:
-                        sat = next(s for s in satellites if s.sid == w.satellite)
-                        # intersection de la fenêtre de la requête et de l'exclusive
-                        win_start = max(t_start, w.t_start)
-                        win_end = min(t_end, w.t_end)
-                        # fenêtre obs incluse dans l'exclusive
-                        if win_end - win_start >= duration + 1:
-                            o_start = random.randint(win_start, win_end - duration - 1)
-                            o_end = o_start + duration + 1
-                            placed = True
-                            break
-
-                    if not placed:
-                        # bascule en "hors exclusive" proprement
-                        sat = random.choice(satellites)
-                        win_len = random.randint(
-                            duration + 1,
-                            max(duration + 2, t_end - t_start),
-                        )
-                        o_start = random.randint(
-                            t_start, max(t_start, t_end - win_len)
-                        )
-                        o_end = min(t_end, o_start + win_len)
-                else:
-                    # opportunité d'un exclusif HORS de toute exclusive
-                    sat = random.choice(satellites)
-                    win_len = random.randint(
-                        duration + 1,
-                        max(duration + 2, t_end - t_start),
-                    )
-                    o_start = random.randint(
-                        t_start, max(t_start, t_end - win_len)
-                    )
-                    o_end = min(t_end, o_start + win_len)
+                if not placed:
+                    # aucune exclusive ne peut accueillir cette opportunité
+                    continue
 
             # ---------- Cas 2 : requête du central u0 ----------------------
             else:
@@ -504,7 +481,16 @@ def generate_ESOP_instance(
         observations=observations,
     )
 
-    # Ici, on ne garde plus le sanity check "toutes les obs d'exclusifs sont dans leurs exclusives"
-    # puisque, par construction, certaines obs d'exclusifs peuvent être hors exclusives.
+    # Sanity check : toutes les obs d'exclusifs sont dans leurs exclusives
+    for o in instance.observations:
+        if o.owner == "u0":
+            continue
+        u = next(u for u in instance.users if u.uid == o.owner)
+        assert any(
+            w.satellite == o.satellite and
+            o.t_start >= w.t_start and
+            o.t_end   <= w.t_end
+            for w in u.exclusive_windows
+        ), f"{o.oid} de {o.owner} hors exclusive"
 
     return instance

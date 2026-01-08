@@ -286,5 +286,11 @@ def sdcop_with_pydcop(
             instance, u_id, extra_obs=None, accepted_u0_obs=current_accepted[u_id]
         )
 
+    # Plan de u0 : on peut simplement appliquer le greedy sur u0 seul
+    # (ses tâches et obs) pour obtenir son planning final
+    from GreedySolver import greedy_schedule_P_u
+    plan_u0 = greedy_schedule_P_u(instance, "u0")
+    final_plans["u0"] = plan_u0
+
     avg_time = sum(times) / len(times) if times else 0.0
     return final_plans, assignments_global, avg_time
