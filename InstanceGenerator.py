@@ -135,6 +135,11 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
     yaml_str = yaml.dump(dcop_dict, sort_keys=False)
     return yaml_str
 
+from typing import List, Tuple
+import random
+from ESOPInstance import ESOPInstance, Satellite, User, ExclusiveWindow, Task, Observation
+
+
 def generate_ESOP_instance(
     nb_satellites: int,
     nb_users: int,          # nb d'utilisateurs exclusifs (hors u0)
@@ -142,30 +147,97 @@ def generate_ESOP_instance(
     horizon: int = 300,
     capacity: int = 20,
     seed: int = None,
+    scenario: str = "generic",   # "generic", "small_scale", "large_scale"
 ) -> ESOPInstance:
     """
-    Génère une instance ESOP fidèle au modèle de l'article :
+    Génère une instance ESOP fidèle au modèle de l'article.
 
-    - Satellites S : mêmes horizons, même capacité, même tau.
-    - Utilisateurs :
-        u0 : central, sans exclusive_windows.
-        u1..u_nb_users : utilisateurs exclusifs, chacun avec plusieurs exclusive_windows.
-    - Requests / Tasks :
-        * Un certain nombre appartiennent à u0 (central).
-        * Les autres appartiennent à des exclusifs u1..u_nb_users.
-    - Observations :
-        * Pour un user exclusif ui : chaque fenêtre obs [t_start_o, t_end_o] est incluse
-          dans UNE de ses exclusive_windows.
-        * Pour u0 :
-            - certaines opportunités sont incluses dans les exclusives d'un user (pour pouvoir
-              “booker” des morceaux d'exclusives),
-            - d'autres sont générées en dehors de toute exclusive (portion 100% centrale).
+    - S : nb_satellites, horizon, capacity, transition_time = 1.
+    - U : u0 (central, sans exclusives) + u1..u_nb_users (exclusifs, avec exclusive_windows).
+    - R : nb_tasks requêtes, réparties entre u0 et les exclusifs selon le scénario.
+    - O : opportunités pour chaque requête :
+        * pour un exclusif ui : chaque observation est incluse dans UNE de ses exclusives,
+          rewards élevés pour garantir la priorité.
+        * pour u0 : mix d'opportunités dans les exclusives (partage) et hors exclusives,
+          rewards plus faibles.
+
+    Le paramètre `scenario` permet de se rapprocher des configurations de la section 6 :
+      - "generic"     : valeurs par défaut raisonnables.
+      - "small_scale" : proche des "highly conflicting small-scale problems".
+      - "large_scale" : proche des "realistic large-scale problems".
     """
 
     if seed is not None:
         random.seed(seed)
 
-    # --- 1) Satellites -------------------------------------------------
+    # ------------------------------------------------------------------
+    # Paramètres par scénario (section 6)
+    # ------------------------------------------------------------------
+
+    if scenario == "small_scale":
+        # 5 min horizon dans l'article, avec horizon=300 ici
+        EXCL_WINDOWS_PER_USER = 8
+        EXCL_WINDOW_LENGTH_RANGE = (15, 20)
+
+        # 2 à 20 requêtes par exclusif, 8 à 80 pour u0 dans le papier.
+        # Ici, nb_tasks est global : on approxime via la probabilité.
+        PROB_TASK_FOR_U0 = 0.5
+
+        # 10 opportunités par requête, durée ~5
+        NB_OPPS_RANGE = (10, 10)
+        DURATION_RANGE = (5, 5)
+
+        # Fenêtre de requête
+        TASK_WINDOW_MIN_LENGTH = 10
+
+        # Rewards : exclusifs élevés, central faible
+        REWARD_EXCLUSIVE_RANGE = (10, 50)
+        REWARD_CENTRAL_RANGE = (1, 5)
+
+        # probabilité qu'une opportunité de u0 soit dans une exclusive
+        PROB_U0_IN_EXCLUSIVE = 0.7
+
+        # Horizon
+        horizon = 300
+
+    elif scenario == "large_scale":
+        # 6 heures ~ 21600s dans le papier ; horizon paramétrable
+        EXCL_WINDOWS_PER_USER = 10
+        EXCL_WINDOW_LENGTH_RANGE = (300, 600)
+
+        # 20 à 100 requêtes par exclusif, 25 à 250 pour u0 (approximation via probas)
+        PROB_TASK_FOR_U0 = 0.5
+
+        # 5 opportunités par requête, durée 20
+        NB_OPPS_RANGE = (5, 5)
+        DURATION_RANGE = (20, 20)
+
+        TASK_WINDOW_MIN_LENGTH = 40  # fenêtres obs ~40–60
+
+        # Rewards, même logique : exclusifs >> central
+        REWARD_EXCLUSIVE_RANGE = (500, 1000)
+        REWARD_CENTRAL_RANGE = (1, 5)
+
+        PROB_U0_IN_EXCLUSIVE = 0.7
+
+    else:  # "generic"
+        EXCL_WINDOWS_PER_USER = 1
+        EXCL_WINDOW_LENGTH_RANGE = (15, 60)
+
+        PROB_TASK_FOR_U0 = 0.5
+
+        NB_OPPS_RANGE = (2, 10)
+        DURATION_RANGE = (3, 10)
+        TASK_WINDOW_MIN_LENGTH = 10
+
+        REWARD_EXCLUSIVE_RANGE = (50, 100)
+        REWARD_CENTRAL_RANGE = (1, 10)
+
+        PROB_U0_IN_EXCLUSIVE = 0.7
+
+    # ------------------------------------------------------------------
+    # 1) Satellites
+    # ------------------------------------------------------------------
     satellites: List[Satellite] = []
     for i in range(nb_satellites):
         satellites.append(
@@ -178,21 +250,19 @@ def generate_ESOP_instance(
             )
         )
 
-    # --- 2) Utilisateurs -----------------------------------------------
+    # ------------------------------------------------------------------
+    # 2) Utilisateurs
+    # ------------------------------------------------------------------
     users: List[User] = []
-    # u0 = central, pas d'exclusives
-    users.append(User(uid="u0", exclusive_windows=[]))
+    users.append(User(uid="u0", exclusive_windows=[]))  # central
 
-    # Utilisateurs exclusifs u1..u_nb_users, chacun avec quelques exclusives
     for u_idx in range(nb_users):
         uid = f"u{u_idx+1}"
         exclusive_windows: List[ExclusiveWindow] = []
 
-        # par ex : 2 à 4 fenêtres exclusives par user
-        nb_excl = random.randint(2, 4)
-        for _ in range(nb_excl):
+        for _ in range(EXCL_WINDOWS_PER_USER):
             sat = random.choice(satellites)
-            length = random.randint(20, 60)
+            length = random.randint(*EXCL_WINDOW_LENGTH_RANGE)
             start = random.randint(0, max(0, horizon - length))
             end = start + length
             exclusive_windows.append(
@@ -201,25 +271,35 @@ def generate_ESOP_instance(
 
         users.append(User(uid=uid, exclusive_windows=exclusive_windows))
 
-    # --- 3) Tâches et observations -------------------------------------
+    exclusive_users = [u for u in users if u.uid != "u0"]
+
+    # ------------------------------------------------------------------
+    # 3) Tâches et observations
+    # ------------------------------------------------------------------
     tasks: List[Task] = []
     observations: List[Observation] = []
 
-    exclusive_users = [u for u in users if u.uid != "u0"]
-
     for t_idx in range(nb_tasks):
-        # Choix du propriétaire de la requête (request)
-        # On force à avoir des tâches pour u0 et pour les exclusifs.
-        if random.random() < 0.5 or nb_users == 0:
+        # Répartition des tasks entre u0 et les exclusifs
+        if random.random() < PROB_TASK_FOR_U0 or nb_users == 0:
             owner = "u0"
         else:
             owner = f"u{random.randint(1, nb_users)}"
 
         tid = f"r_{t_idx}"
-        t_start = random.randint(0, horizon // 2)
-        t_end = random.randint(t_start + 10, horizon)
-        duration = random.randint(3, 10)
-        reward = random.randint(1, 10)
+
+        # Fenêtre de la requête
+        t_start = random.randint(0, max(0, horizon - TASK_WINDOW_MIN_LENGTH - 1))
+        t_end = random.randint(t_start + TASK_WINDOW_MIN_LENGTH, horizon)
+
+        # Durée d'une observation
+        duration = random.randint(*DURATION_RANGE)
+
+        # Reward de la requête (et des obs)
+        if owner == "u0":
+            reward = random.randint(*REWARD_CENTRAL_RANGE)
+        else:
+            reward = random.randint(*REWARD_EXCLUSIVE_RANGE)
 
         task = Task(
             tid=tid,
@@ -231,27 +311,27 @@ def generate_ESOP_instance(
             opportunities=[],
         )
 
-        nb_opps = random.randint(2, 4)
+        nb_opps = random.randint(*NB_OPPS_RANGE)
 
         for k in range(nb_opps):
             oid = f"o_{tid}_{k}"
 
-            # --- Cas 1 : requête d'un utilisateur exclusif ui ----------
+            # ---------- Cas 1 : requête d'un utilisateur exclusif ----------
             if owner != "u0":
-                # On force TOUTES ses obs à être dans SES exclusives
                 u_owner = next(u for u in users if u.uid == owner)
                 if not u_owner.exclusive_windows:
-                    # cas limite : pas d'exclusives -> on ne crée pas d'opportunité
+                    # cas limite théorique -> on saute
                     continue
 
-                # essayer plusieurs fenêtres exclusives jusqu'à en trouver une compatible
                 windows = u_owner.exclusive_windows[:]
                 random.shuffle(windows)
                 placed = False
+                sat: Satellite | None = None
+
                 for w in windows:
                     sat = next(s for s in satellites if s.sid == w.satellite)
 
-                    # fenêtre obs incluse dans [t_start,t_end] ∩ [w.t_start,w.t_end]
+                    # intersection de la fenêtre de la requête et de l'exclusive
                     win_start = max(t_start, w.t_start)
                     win_end = min(t_end, w.t_end)
 
@@ -262,17 +342,13 @@ def generate_ESOP_instance(
                         break
 
                 if not placed:
-                    # aucune exclusive ne peut accueillir cette opportunité -> on la saute
+                    # aucune exclusive ne peut accueillir cette opportunité
                     continue
 
-
-            # --- Cas 2 : requête du central u0 -------------------------
+            # ---------- Cas 2 : requête du central u0 ----------------------
             else:
-                # On choisit avec une certaine probabilité de mettre l'obs :
-                #  - dans une exclusive d'un user,
-                #  - ou hors de toute exclusive (portion purement centrale).
-                if exclusive_users and random.random() < 0.7:
-                    # Mettre cette opportunité dans l'exclusive d'un user au hasard
+                if exclusive_users and random.random() < PROB_U0_IN_EXCLUSIVE:
+                    # opportunité dans une exclusive d'un utilisateur
                     excl_user = random.choice(exclusive_users)
                     if excl_user.exclusive_windows:
                         w = random.choice(excl_user.exclusive_windows)
@@ -285,24 +361,36 @@ def generate_ESOP_instance(
                             o_start = random.randint(win_start, win_end - duration - 1)
                             o_end = o_start + duration + 1
                         else:
-                            # pas assez de place dans cette exclusive -> placer hors exclusives
+                            # pas assez de place dans cette exclusive -> hors exclusives
                             sat = random.choice(satellites)
-                            win_len = random.randint(duration + 1, max(duration + 2, t_end - t_start))
-                            o_start = random.randint(t_start, max(t_start, t_end - win_len))
+                            win_len = random.randint(
+                                duration + 1,
+                                max(duration + 2, t_end - t_start),
+                            )
+                            o_start = random.randint(
+                                t_start, max(t_start, t_end - win_len)
+                            )
                             o_end = min(t_end, o_start + win_len)
                     else:
-                        # user sans exclusives (très improbable ici) -> hors exclusives
                         sat = random.choice(satellites)
-                        win_len = random.randint(duration + 1, max(duration + 2, t_end - t_start))
-                        o_start = random.randint(t_start, max(t_start, t_end - win_len))
+                        win_len = random.randint(
+                            duration + 1,
+                            max(duration + 2, t_end - t_start),
+                        )
+                        o_start = random.randint(
+                            t_start, max(t_start, t_end - win_len)
+                        )
                         o_end = min(t_end, o_start + win_len)
                 else:
-                    # Opportunité de u0 hors de toute exclusive (au moins en intention)
-                    # (On ne vérifie pas explicitement "hors exclusives" ici, mais on ne force
-                    #  pas l'inclusion dans une exclusive.)
+                    # opportunité de u0 hors de toute exclusive (au moins en intention)
                     sat = random.choice(satellites)
-                    win_len = random.randint(duration + 1, max(duration + 2, t_end - t_start))
-                    o_start = random.randint(t_start, max(t_start, t_end - win_len))
+                    win_len = random.randint(
+                        duration + 1,
+                        max(duration + 2, t_end - t_start),
+                    )
+                    o_start = random.randint(
+                        t_start, max(t_start, t_end - win_len)
+                    )
                     o_end = min(t_end, o_start + win_len)
 
             obs = Observation(
@@ -331,6 +419,7 @@ def generate_ESOP_instance(
         observations=observations,
     )
 
+    # Sanity check : toutes les obs d'exclusifs sont dans leurs exclusives
     for o in instance.observations:
         if o.owner == "u0":
             continue
@@ -341,4 +430,5 @@ def generate_ESOP_instance(
             o.t_end   <= w.t_end
             for w in u.exclusive_windows
         ), f"{o.oid} de {o.owner} hors exclusive"
+
     return instance
