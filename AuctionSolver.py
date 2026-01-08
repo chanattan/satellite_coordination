@@ -328,6 +328,97 @@ def solve_ssi(instance: ESOPInstance) -> Dict[str, Dict[str, List[Tuple[Observat
     
     return global_plan
 
+def solve_ssi_regret(instance: ESOPInstance) -> Dict[str, Dict[str, List[Tuple[Observation, int]]]]:
+    """
+    Enchères séquentielles basées sur le regret (extension de SSI).
+
+    Idée :
+      - On parcourt les requêtes de u0 séquentiellement (comme SSI).
+      - Chaque agent calcule un bid brut via calculate_bid(task).
+      - Chaque agent garde un "regret" (meilleur gain manqué jusqu'ici).
+      - Les bids sont ajustés : bid_ajusté = bid_brut + regret[uid].
+      - Si un agent gagne, son regret est légèrement réduit (il "rattrape" son retard).
+      - Si une tâche n'est attribuée à personne, on met à jour le regret de ceux
+        qui avaient un bid brut positif (ils ont manqué une opportunité).
+
+    Cela favorise les agents qui ont souvent eu de bons bids mais n'ont pas gagné.
+    """
+
+    exclusive_users = [u for u in instance.users if u.uid != "u0"]
+    agents = {u.uid: AuctionAgent(u, instance) for u in exclusive_users}
+    global_plan = {u.uid: {} for u in instance.users}
+
+    # 1. Résolution locale initiale (comme SSI)
+    for agent in agents.values():
+        agent.solve_local()
+
+    # Regret initial pour chaque agent
+    regret: Dict[str, float] = {u.uid: 0.0 for u in exclusive_users}
+
+    central_tasks = [t for t in instance.tasks if t.owner == "u0"]
+    # ordre séquentiel (comme SSI)
+    central_tasks.sort(key=lambda t: t.t_start)
+
+    # 2. Boucle séquentielle avec regret
+    for task in central_tasks:
+        best_adjusted_bid = -1.0
+        best_raw_bid = -1.0
+        best_obs = None
+        winner_id = None
+
+        # On stocke aussi les bids bruts pour mettre à jour les regrets des perdants
+        raw_bids: Dict[str, float] = {}
+
+        # Enchères
+        for uid, agent in agents.items():
+            raw_bid, obs = agent.calculate_bid(task)
+            raw_bids[uid] = raw_bid
+
+            if obs is None or raw_bid <= 0:
+                continue
+
+            adjusted_bid = raw_bid + regret[uid]
+            if adjusted_bid > best_adjusted_bid:
+                best_adjusted_bid = adjusted_bid
+                best_raw_bid = raw_bid
+                best_obs = obs
+                winner_id = uid
+
+        # Allocation si quelqu'un gagne avec un bid ajusté positif
+        if winner_id is not None and best_obs is not None and best_adjusted_bid > 0:
+            original_owner = task.owner
+            task.owner = winner_id  # transfert de propriété
+
+            if agents[winner_id].add_observation(best_obs):
+                # Succès : l'agent a enfin gagné quelque chose, on réduit son regret
+                # (par ex. moitié du regret, ou "on consomme" la partie correspondante au raw_bid)
+                regret[winner_id] = max(0.0, regret[winner_id] - best_raw_bid)
+            else:
+                # Si l'insertion échoue, rollback comme en SSI
+                task.owner = original_owner
+
+        else:
+            # Aucun gagnant : tous les agents avec un bid brut positif "ratent" une opportunité
+            for uid, raw_bid in raw_bids.items():
+                if raw_bid > 0:
+                    regret[uid] = max(regret[uid], raw_bid)
+
+    # 3. Construction du plan global
+    for uid, agent in agents.items():
+        global_plan[uid] = agent.plan
+
+    # Fusion des plans exclusifs pour construire un plan de base avant d'ajouter u0
+    merged_exclusive_plan = {s.sid: [] for s in instance.satellites}
+    for agent in agents.values():
+        for sid, obs_list in agent.plan.items():
+            if sid in merged_exclusive_plan:
+                merged_exclusive_plan[sid].extend(obs_list)
+
+    global_plan["u0"] = greedy_plan_for_u0(instance, merged_exclusive_plan)
+
+    return global_plan
+
+
 # =============================================================================
 # PLANIFICATION U0 (FINALE)
 # =============================================================================
@@ -390,3 +481,4 @@ def greedy_plan_for_u0(instance: ESOPInstance, existing_plan: Dict[str, List[Tup
                 u0_plan[sid].append((obs, start_time))
                 
     return u0_plan
+
