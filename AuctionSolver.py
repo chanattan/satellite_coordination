@@ -1,340 +1,392 @@
 from ESOPInstance import ESOPInstance, User, Task, Observation
-from typing import List, Dict, Tuple, Optional
+from GreedySolver import greedy_schedule
+from typing import List, Dict, Tuple, Optional, Any
 
+# =============================================================================
+# FONCTIONS UTILITAIRES POUR TRANSITIONS
+# =============================================================================
+
+def check_transition_feasibility_global(
+    merged_plan: Dict[str, List[Tuple[Observation, int]]],
+    sat: Any, # Objet Satellite
+    new_obs: Observation,
+    new_start: int
+) -> bool:
+    """
+    Vérifie si une observation respecte les transitions sur un satellite donné
+    en tenant compte du plan déjà établi (merged_plan).
+    Utilisé pour la fusion finale du plan u0.
+    """
+    sid = sat.sid
+    tau = sat.transition_time 
+    
+    current_ops = merged_plan.get(sid, [])
+    if not current_ops:
+        return True
+        
+    new_end = new_start + new_obs.duration
+
+    # On vérifie les conflits avec toutes les opérations existantes sur ce satellite
+    for (existing_obs, existing_start) in current_ops:
+        existing_end = existing_start + existing_obs.duration
+        
+        # 1. Chevauchement temporel strict
+        if not (new_end <= existing_start or new_start >= existing_end):
+            return False
+            
+        # 2. Temps de transition (avant ou après)
+        # Si new est avant existing
+        if new_end <= existing_start:
+            if new_end + tau > existing_start:
+                return False
+        # Si new est après existing
+        if existing_end <= new_start:
+            if existing_end + tau > new_start:
+                return False
+                
+    return True
+
+
+# =============================================================================
+# AGENT D'ENCHÈRES
+# =============================================================================
 
 class AuctionAgent:
     """
-    Classe wrapper pour gérer la logique d'enchère et de planning d'un utilisateur.
+    Agent responsable de calculer les bids et gérer le plan local d'un utilisateur exclusif.
     """
+
     def __init__(self, user: User, instance: ESOPInstance):
         self.user = user
         self.instance = instance
-        self.plan: Dict[str, List[Tuple[Observation, int]]] = {
-            s.sid: [] for s in instance.satellites
-        }
-        self.capacity_usage: Dict[str, int] = {s.sid: 0 for s in instance.satellites}
+        # Plan courant : {sat_id: [(obs, t_start), ...]}
+        self.plan: Dict[str, List[Tuple[Observation, int]]] = {}
 
-    def solve_local(self, initial_observations: List[Observation]):
-        for obs in initial_observations:
-            if obs.owner == self.user.uid:  # ✅ Ajouter cette condition
-                success = self.add_observation(obs)
-                if not success:
-                    print(f"Warning: Impossible d'ajouter l'observation initiale {obs.oid}")
-
-
-    def _plan_reward(self) -> float:
-        """Somme des rewards des observations dans le plan courant."""
-        total = 0.0
-        for sid, obs_list in self.plan.items():
-            for obs, _ in obs_list:
-                total += obs.reward
-        return total
-
-    def _try_insert_marginal(self, obs: Observation) -> float:
+    def _restrict_obs_to_exclusive(self, obs: Observation) -> Optional[Observation]:
         """
-        Calcule le gain marginal de l'observation obs :
-        reward(plan + obs) - reward(plan), en utilisant le même greedy local.
+        [CORRECTION CRITIQUE] 
+        Crée une copie de l'observation dont la fenêtre [t_start, t_end] est 
+        l'intersection stricte entre la fenêtre originale et les fenêtres 
+        exclusives de l'utilisateur sur ce satellite.
+        
+        Empêche physiquement le GreedySolver de planifier hors des zones réservées.
         """
-        backup_plan = {sid: lst[:] for sid, lst in self.plan.items()}
-        backup_cap = self.capacity_usage.copy()
-        base_reward = self._plan_reward()
+        valid_intervals = []
+        for win in self.user.exclusive_windows:
+            if win.satellite == obs.satellite:
+                # Intersection mathématique des intervalles
+                start = max(obs.t_start, win.t_start)
+                end = min(obs.t_end, win.t_end)
+                
+                # Vérifie si l'observation rentre dans l'intersection
+                if start + obs.duration <= end:
+                    valid_intervals.append((start, end))
+        
+        if not valid_intervals:
+            return None
+            
+        # On prend la première fenêtre valide (simplification)
+        best_start, best_end = valid_intervals[0]
+        
+        # On renvoie une NOUVELLE instance d'Observation modifiée
+        new_obs = Observation(
+            oid=obs.oid, 
+            task_id=obs.task_id, 
+            satellite=obs.satellite, 
+            t_start=best_start,   # Fenêtre restreinte
+            t_end=best_end,       # Fenêtre restreinte
+            duration=obs.duration, 
+            reward=obs.reward, 
+            owner=self.user.uid
+        )
+        return new_obs
 
-        gain = -1.0
-        if self.add_observation(obs):
-            gain = self._plan_reward() - base_reward
+    def _create_local_instance(self, extra_task: Task = None) -> ESOPInstance:
+        """
+        Construit une sous-instance P[u] contenant :
+        1. Les tâches déjà possédées par l'utilisateur.
+        2. (Optionnel) Une tâche supplémentaire 'extra_task' (pour le calcul du bid).
+        3. LES OBSERVATIONS RESTREINTES (CLIPPÉES) correspondantes.
+        """
+        # 1. Identifier les tâches à considérer
+        tasks_to_consider = [t for t in self.instance.tasks if t.owner == self.user.uid]
+        if extra_task and extra_task not in tasks_to_consider:
+            tasks_to_consider.append(extra_task)
+            
+        # 2. Rassembler et CLIPPER toutes les opportunités liées à ces tâches
+        restricted_obs = []
+        for task in tasks_to_consider:
+            for opp in task.opportunities:
+                # On ne garde que ce qui rentre dans nos fenêtres exclusives
+                clipped_opp = self._restrict_obs_to_exclusive(opp)
+                if clipped_opp:
+                    restricted_obs.append(clipped_opp)
+        
+        # 3. Créer l'instance ESOP temporaire
+        # Note : On met nb_users=1 car c'est une résolution locale
+        inst_u = ESOPInstance(
+            nb_satellites=self.instance.nb_satellites,
+            nb_users=1,
+            nb_tasks=len(tasks_to_consider),
+            horizon=self.instance.horizon,
+            satellites=self.instance.satellites,
+            users=[self.user],
+            tasks=tasks_to_consider,
+            observations=restricted_obs # On passe la liste filtrée
+        )
+        return inst_u
 
-        # restauration de l'état
-        self.plan = backup_plan
-        self.capacity_usage = backup_cap
-        return gain
+    def solve_local(self) -> None:
+        """
+        Met à jour le plan local self.plan en résolvant P[u] avec les contraintes exclusives.
+        """
+        inst_u = self._create_local_instance()
+        # Appel au GreedySolver générique
+        full_plan = greedy_schedule(inst_u)
+        self.plan = full_plan.get(self.user.uid, {})
 
     def calculate_bid(self, task: Task) -> Tuple[float, Optional[Observation]]:
         """
-        Correspond à 'bid(r, M_u)'.
-        Calcule le coût marginal pour une tâche donnée (gain de reward).
-        Retourne (valeur_enchere, meilleure_opportunite).
+        Calcule le gain marginal si on ajoutait 'task' au plan courant.
+        bid = Score(Plan + Task) - Score(Plan Actuel)
         """
-        best_bid_value = -1.0
-        best_opportunity = None
-
-        for opp in task.opportunities:
-            if not self._is_in_exclusive_window(opp):
-                continue
-            if not self._is_feasible(opp):
-                continue
-
-            # Bid = gain marginal (approximation de solve(P_u ∪ {r}) - solve(P_u))
-            gain = self._try_insert_marginal(opp)
-            if gain > best_bid_value:
-                best_bid_value = gain
-                best_opportunity = opp
-
-        return best_bid_value, best_opportunity
+        current_reward = sum(obs.reward for obs_list in self.plan.values() for obs, _ in obs_list)
+        
+        # Création d'une instance temporaire incluant la nouvelle tâche
+        # Les observations seront automatiquement clippées par _create_local_instance
+        temp_inst = self._create_local_instance(extra_task=task)
+        
+        # Résolution gloutonne sur l'instance temporaire
+        temp_plans = greedy_schedule(temp_inst)
+        temp_user_plan = temp_plans.get(self.user.uid, {})
+        
+        # Calcul du nouveau score
+        new_reward = sum(obs.reward for obs_list in temp_user_plan.values() for obs, _ in obs_list)
+        
+        marginal_gain = new_reward - current_reward
+        
+        # Si gain positif, on doit identifier quelle observation a permis de satisfaire la tâche
+        # (Utile pour PSI/SSI pour savoir où ça a été placé)
+        if marginal_gain > 0:
+            scheduled_obs = None
+            for obs_list in temp_user_plan.values():
+                for obs, _ in obs_list:
+                    if obs.task_id == task.tid:
+                        scheduled_obs = obs
+                        break
+                if scheduled_obs: break
+            
+            if scheduled_obs:
+                return marginal_gain, scheduled_obs
+                
+        return -1.0, None
 
     def add_observation(self, obs: Observation) -> bool:
         """
-        Tente d'ajouter une observation au plan local (M_w <- M_w + sigma).
-        Retourne True si succès.
+        Valide l'ajout d'une tâche/observation suite à une enchère gagnée.
+        Dans PSI/SSI, task.owner est mis à jour à l'extérieur.
+        Ici, on relance solve_local() pour officialiser le nouveau plan.
         """
-        if not self._is_feasible(obs):
+        # Note : obs est l'observation restreinte retournée par calculate_bid.
+        # Pour être robuste, on fait confiance à 'solve_local' pour tout recalculer
+        # proprement basé sur le fait que self.user possède maintenant la tâche.
+        
+        # On sauvegarde l'état actuel pour rollback si besoin (optionnel dans greedy mais prudent)
+        old_plan = self.plan
+        
+        self.solve_local()
+        
+        # Vérification : est-ce que la tâche est bien dans le nouveau plan ?
+        # (Elle devrait l'être car calculate_bid a dit que c'était possible)
+        is_scheduled = False
+        for obs_list in self.plan.values():
+            for o, _ in obs_list:
+                if o.task_id == obs.task_id:
+                    is_scheduled = True
+                    break
+        
+        if is_scheduled:
+            return True
+        else:
+            # Cas rare : conflit d'ordre greedy imprévu (ex: en PSI parallèle)
+            self.plan = old_plan
             return False
 
-        self.plan[obs.satellite].append((obs, obs.t_start))
-        self.plan[obs.satellite].sort(key=lambda x: x[1])
-        self.capacity_usage[obs.satellite] += 1
-        return True
-
-    def _is_in_exclusive_window(self, obs: Observation) -> bool:
-        """Vérifie si l'observation tombe dans une fenêtre exclusive de l'agent."""
-        for window in self.user.exclusive_windows:
-            if window.satellite == obs.satellite:
-                if (obs.t_start >= window.t_start) and (obs.t_end <= window.t_end):
-                    return True
-        return False
-
-    def _is_feasible(self, obs: Observation) -> bool:
-        """Vérifie les contraintes physiques sans modifier le plan."""
-        sid = obs.satellite
-        sat_obj = next(s for s in self.instance.satellites if s.sid == sid)
-
-        if self.capacity_usage[sid] >= sat_obj.capacity:
-            return False
-
-        existing_obs_list = self.plan[sid]
-        trans_time = sat_obj.transition_time
-
-        for existing_obs, t_start in existing_obs_list:
-            # chevauchement temporel
-            if not (obs.t_end <= existing_obs.t_start or obs.t_start >= existing_obs.t_end):
-                return False
-
-            # temps de transition après existing_obs
-            if obs.t_start >= existing_obs.t_end:
-                if obs.t_start < existing_obs.t_end + trans_time:
-                    return False
-
-            # temps de transition avant existing_obs
-            if obs.t_end <= existing_obs.t_start:
-                if existing_obs.t_start < obs.t_end + trans_time:
-                    return False
-
-        return True
-
-def greedy_plan_for_u0(instance: ESOPInstance,
-                       existing_plan: Optional[Dict[str, List[Tuple[Observation, int]]]] = None
-                       ) -> Dict[str, List[Tuple[Observation, int]]]:
-    """
-    Planificateur greedy pour u0 SUR LES CRÉNEAUX NON-EXCLUSIFS UNIQUEMENT.
-    """
-    if existing_plan is None:
-        plan = {s.sid: [] for s in instance.satellites}
-    else:
-        plan = {sid: lst.copy() for sid, lst in existing_plan.items()}
-    capacity_usage = {s.sid: len(plan[s.sid]) for s in instance.satellites}
-
-    def is_feasible_u0(obs: Observation) -> bool:
-        sid = obs.satellite
-        sat_obj = next(s for s in instance.satellites if s.sid == sid)
-        if capacity_usage[sid] >= sat_obj.capacity:
-            return False
-
-        #Vérifier que ce n'est PAS dans une fenêtre exclusive d'un AUTRE utilisateur
-        for user in instance.users:
-            if user.uid != "u0":  # Seulement les exclusifs
-                for window in user.exclusive_windows:
-                    if (window.satellite == sid and 
-                        obs.t_start >= window.t_start and 
-                        obs.t_end <= window.t_end):
-                        return False  # Violation d'exclusive !
-
-        existing_obs_list = plan[sid]
-        trans_time = sat_obj.transition_time
-
-        for existing_obs, t_start in existing_obs_list:
-            if not (obs.t_end <= existing_obs.t_start or obs.t_start >= existing_obs.t_end):
-                return False
-            if obs.t_start >= existing_obs.t_end:
-                if obs.t_start < existing_obs.t_end + trans_time:
-                    return False
-            if obs.t_end <= existing_obs.t_start:
-                if existing_obs.t_start < obs.t_end + trans_time:
-                    return False
-        return True
-
-    remaining_obs: List[Observation] = []
-    for task in instance.tasks:
-        if task.owner == "u0":
-            for opp in task.opportunities:
-                if opp.owner == "u0":  # Encore détenues par u0
-                    remaining_obs.append(opp)
-
-    remaining_obs.sort(key=lambda o: o.t_start)
-
-    for obs in remaining_obs:
-        if is_feasible_u0(obs):  # Maintenant respecte les exclusives
-            plan[obs.satellite].append((obs, obs.t_start))
-            plan[obs.satellite].sort(key=lambda x: x[1])
-            capacity_usage[obs.satellite] += 1
-
-    return plan
-
-
+# =============================================================================
+# ALGORITHMES PSI et SSI
+# =============================================================================
 
 def solve_psi(instance: ESOPInstance) -> Dict[str, Dict[str, List[Tuple[Observation, int]]]]:
     """
-    Algorithme 2 : Parallel Single-Item (PSI)
+    Algorithme 2 : Parallel Single-Item Auction.
     """
     exclusive_users = [u for u in instance.users if u.uid != "u0"]
     agents = {u.uid: AuctionAgent(u, instance) for u in exclusive_users}
-
     global_plan = {u.uid: {} for u in instance.users}
 
-    # Initialisation des plans locaux avec les observations propres à chaque utilisateur exclusif
-    for uid, agent in agents.items():
-        own_obs = [o for o in instance.observations if o.owner == uid]
-        agent.solve_local(own_obs)
+    # 1. Résolution locale initiale
+    for agent in agents.values():
+        agent.solve_local()
 
-    # PHASE PARALLÈLE : chaque agent calcule ses bids pour toutes les requêtes de u0
-    bids_registry = {}  # {task_id: [(bid_value, obs, agent_id)]}
-
+    bids_registry = [] 
     central_tasks = [t for t in instance.tasks if t.owner == "u0"]
 
+    # 2. Bidding parallèle
     for task in central_tasks:
-        bids_registry[task.tid] = []
         for uid, agent in agents.items():
             bid_val, best_obs = agent.calculate_bid(task)
-            if best_obs:
-                bids_registry[task.tid].append((bid_val, best_obs, uid))
+            if best_obs and bid_val > 0:
+                bids_registry.append((bid_val, best_obs, uid, task))
 
-    # Attribution des tâches à partir des bids calculés en parallèle
-    for task in central_tasks:
-        offers = bids_registry.get(task.tid, [])
-
-        if not offers:
+    # 3. Winner Determination (Tri par meilleure offre globale)
+    bids_registry.sort(key=lambda x: x[0], reverse=True)
+    
+    assigned_task_ids = set()
+    
+    for bid_val, obs, winner_id, task in bids_registry:
+        if task.tid in assigned_task_ids:
             continue
+            
+        # Changement de propriétaire PROVISOIRE pour l'agent
+        # L'agent recalculera son plan dans add_observation
+        original_owner = task.owner
+        task.owner = winner_id 
+        
+        if agents[winner_id].add_observation(obs):
+            # Succès confirmé
+            assigned_task_ids.add(task.tid)
+            # obs.owner a été géré par la recréation dans l'agent, 
+            # mais on s'assure que la tâche reste au winner.
+        else:
+            # Echec (conflit PSI), on remet le owner à u0
+            task.owner = original_owner
 
-        # w <- argmax(B_u[r])
-        offers.sort(key=lambda x: x[0], reverse=True)
-        best_bid, winning_obs, winner_id = offers[0]
-
-        if best_bid > 0:
-            success = agents[winner_id].add_observation(winning_obs)
-            if success:
-                winning_obs.owner = winner_id
-            else:
-                # conflit PSI typique (état local différent au moment de l'allocation)
-                pass
-
-    # Construction du plan global
+    # 4. Construction du plan global
     for uid, agent in agents.items():
         global_plan[uid] = agent.plan
 
-    # u0 planifie greedily les observations restantes
-    global_plan["u0"] = greedy_plan_for_u0(instance)
-
+    # 5. Fusion et planification du reste pour u0
+    merged_exclusive_plan = {s.sid: [] for s in instance.satellites}
+    for agent in agents.values():
+        for sid, obs_list in agent.plan.items():
+            if sid in merged_exclusive_plan:
+                merged_exclusive_plan[sid].extend(obs_list)
+    
+    global_plan["u0"] = greedy_plan_for_u0(instance, merged_exclusive_plan)
+    
     return global_plan
 
 
 def solve_ssi(instance: ESOPInstance) -> Dict[str, Dict[str, List[Tuple[Observation, int]]]]:
     """
-    Algorithme 3 : Sequential Single-Item (SSI)
+    Algorithme 3 : Sequential Single-Item Auction.
     """
     exclusive_users = [u for u in instance.users if u.uid != "u0"]
     agents = {u.uid: AuctionAgent(u, instance) for u in exclusive_users}
     global_plan = {u.uid: {} for u in instance.users}
 
-    # Initialisation des plans locaux avec les observations propres à chaque utilisateur exclusif
-    for uid, agent in agents.items():
-        own_obs = [o for o in instance.observations if o.owner == uid]
-        agent.solve_local(own_obs)
-
-    # Tri séquentiel des requêtes de u0
-    central_tasks = [t for t in instance.tasks if t.owner == "u0"]
-    central_tasks.sort(key=lambda t: t.t_start)
-
-    for task in central_tasks:
-        best_global_bid = -1.0
-        best_global_obs = None
-        winner_id = None
-
-        for uid, agent in agents.items():
-            bid_val, obs = agent.calculate_bid(task)
-
-            if bid_val > best_global_bid:
-                best_global_bid = bid_val
-                best_global_obs = obs
-                winner_id = uid
-
-        if winner_id and best_global_bid > 0 and best_global_obs is not None:
-            success = agents[winner_id].add_observation(best_global_obs)
-            if success:
-                best_global_obs.owner = winner_id
-
-    for uid, agent in agents.items():
-        global_plan[uid] = agent.plan
-
-    global_plan["u0"] = greedy_plan_for_u0(instance)
-
-    return global_plan
-
-
-def solve_ssi_regret(instance: ESOPInstance) -> Dict[str, Dict[str, List[Tuple[Observation, int]]]]:
-    """
-    Enchères séquentielles basées sur le regret (version simplifiée).
-    Chaque agent garde une trace du meilleur gain marginal raté
-    et ajuste ses bids en conséquence.
-    """
-    exclusive_users = [u for u in instance.users if u.uid != "u0"]
-    agents = {u.uid: AuctionAgent(u, instance) for u in exclusive_users}
-    global_plan = {u.uid: {} for u in instance.users}
-
-    # Initialisation des plans locaux avec les observations propres à chaque utilisateur exclusif
-    for uid, agent in agents.items():
-        own_obs = [o for o in instance.observations if o.owner == uid]
-        agent.solve_local(own_obs)
+    # 1. Résolution locale initiale
+    for agent in agents.values():
+        agent.solve_local()
 
     central_tasks = [t for t in instance.tasks if t.owner == "u0"]
+    # Tri par temps de début (heuristique courante SSI)
     central_tasks.sort(key=lambda t: t.t_start)
 
-    # mémoire du meilleur gain raté pour chaque agent
-    missed_best_gain: Dict[str, float] = {u.uid: 0.0 for u in exclusive_users}
-
+    # 2. Boucle séquentielle
     for task in central_tasks:
-        best_adjusted_bid = -1.0
+        best_bid = -1.0
         best_obs = None
         winner_id = None
-
-        # calcul des bids ajustés par "regret" pour la tâche courante
+        
+        # Enchères
         for uid, agent in agents.items():
-            raw_bid, obs = agent.calculate_bid(task)
-            if raw_bid <= 0 or obs is None:
-                continue
-
-            adjusted_bid = raw_bid - missed_best_gain[uid]
-
-            if adjusted_bid > best_adjusted_bid:
-                best_adjusted_bid = adjusted_bid
+            bid_val, obs = agent.calculate_bid(task)
+            if obs and bid_val > best_bid:
+                best_bid = bid_val
                 best_obs = obs
                 winner_id = uid
+        
+        # Allocation
+        if winner_id and best_obs and best_bid > 0:
+            task.owner = winner_id # Transfert de propriété
+            if not agents[winner_id].add_observation(best_obs):
+                # Si échec (ne devrait pas arriver en SSI pur), rollback
+                task.owner = "u0"
 
-        if winner_id is not None and best_adjusted_bid > 0 and best_obs is not None:
-            success = agents[winner_id].add_observation(best_obs)
-            if success:
-                best_obs.owner = winner_id
-            else:
-                # si l'insertion échoue, on considère ce gain comme "raté"
-                missed_best_gain[winner_id] = max(missed_best_gain[winner_id], best_adjusted_bid)
-        else:
-            # si personne ne gagne cette tâche, on met à jour le "meilleur gain raté" pour ceux qui avaient un bid > 0
-            for uid, agent in agents.items():
-                raw_bid, obs = agent.calculate_bid(task)
-                if raw_bid > missed_best_gain[uid]:
-                    missed_best_gain[uid] = raw_bid
-
+    # 3. Construction résultat
     for uid, agent in agents.items():
         global_plan[uid] = agent.plan
 
-    global_plan["u0"] = greedy_plan_for_u0(instance)
-
-    return global_plan
+    merged_exclusive_plan = {s.sid: [] for s in instance.satellites}
+    for agent in agents.values():
+        for sid, obs_list in agent.plan.items():
+            if sid in merged_exclusive_plan:
+                merged_exclusive_plan[sid].extend(obs_list)
+                
+    global_plan["u0"] = greedy_plan_for_u0(instance, merged_exclusive_plan)
     
+    return global_plan
+
+# =============================================================================
+# PLANIFICATION U0 (FINALE)
+# =============================================================================
+
+def greedy_plan_for_u0(instance: ESOPInstance, existing_plan: Dict[str, List[Tuple[Observation, int]]]) -> Dict[str, List[Tuple[Observation, int]]]:
+    """
+    Planifie les tâches restantes de u0 dans les trous laissés par les exclusifs.
+    """
+    u0_plan = {s.sid: [] for s in instance.satellites}
+    
+    remaining_tasks = [t for t in instance.tasks if t.owner == "u0"]
+    remaining_obs = []
+    
+    # On récupère toutes les opportunités u0 possibles
+    for t in remaining_tasks:
+        for opp in t.opportunities:
+            if opp.owner == "u0":
+                remaining_obs.append(opp)
+    
+    if not remaining_obs:
+        return u0_plan
+    
+    # Instance u0 isolée
+    u0_user = next(u for u in instance.users if u.uid == "u0")
+    u0_inst = ESOPInstance(
+        nb_satellites=instance.nb_satellites,
+        nb_users=0,
+        nb_tasks=len(remaining_tasks),
+        horizon=instance.horizon,
+        satellites=instance.satellites,
+        users=[u0_user],
+        tasks=remaining_tasks,
+        observations=remaining_obs
+    )
+    
+    # Planification idéale u0
+    raw_u0_plan = greedy_schedule(u0_inst).get("u0", {})
+    
+    sat_map = {s.sid: s for s in instance.satellites}
+    
+    # Intégration en respectant les contraintes globales
+    for sid, obs_list in raw_u0_plan.items():
+        if sid not in sat_map: continue
+        sat = sat_map[sid]
+        
+        sorted_u0_obs = sorted(obs_list, key=lambda x: x[1])
+        
+        for obs, start_time in sorted_u0_obs:
+            # Vérif Capacité
+            current_load = len(existing_plan.get(sid, [])) + len(u0_plan[sid])
+            if current_load >= sat.capacity:
+                continue 
+            
+            # Vérif Transitions (Global)
+            temp_combined_plan = {
+                sid: existing_plan.get(sid, []) + u0_plan[sid]
+            }
+            
+            if check_transition_feasibility_global(temp_combined_plan, sat, obs, start_time):
+                u0_plan[sid].append((obs, start_time))
+                
+    return u0_plan
