@@ -147,7 +147,8 @@ def generate_ESOP_instance(
     horizon: int = 300,
     capacity: int = 20,
     seed: int = None,
-    scenario: str = "generic",   # "generic", "small_scale", "large_scale"
+    scenario: str = "generic",   # "generic", "small_scale", "large_scale",
+    one_exclusive_window_per_satellite=False
 ) -> ESOPInstance:
     """
     Génère une instance ESOP fidèle au modèle de l'article.
@@ -263,7 +264,7 @@ def generate_ESOP_instance(
 
         for _ in range(EXCL_WINDOWS_PER_USER):
             try:
-                sat = random.choice([s for s in satellites if s.sid not in taken_sats])
+                sat = random.choice([s for s in satellites if s.sid not in taken_sats] if one_exclusive_window_per_satellite else satellites)
             except IndexError:
                 # toutes les satellites ont une exclusive pour cet utilisateur
                 break
@@ -273,7 +274,8 @@ def generate_ESOP_instance(
             exclusive_windows.append(
                 ExclusiveWindow(satellite=sat.sid, t_start=start, t_end=end)
             )
-            taken_sats.add(sat.sid)
+            if one_exclusive_window_per_satellite:
+                taken_sats.add(sat.sid)
 
         users.append(User(uid=uid, exclusive_windows=exclusive_windows))
 
