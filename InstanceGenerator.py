@@ -255,14 +255,18 @@ def generate_ESOP_instance(
     # ------------------------------------------------------------------
     users: List[User] = []
     users.append(User(uid="u0", exclusive_windows=[]))  # central
+    taken_sats = set()
 
     for u_idx in range(nb_users):
         uid = f"u{u_idx+1}"
         exclusive_windows: List[ExclusiveWindow] = []
-        taken_sats = set()
 
         for _ in range(EXCL_WINDOWS_PER_USER):
-            sat = random.choice([s for s in satellites if s.sid not in taken_sats])
+            try:
+                sat = random.choice([s for s in satellites if s.sid not in taken_sats])
+            except IndexError:
+                # toutes les satellites ont une exclusive pour cet utilisateur
+                break
             length = random.randint(*EXCL_WINDOW_LENGTH_RANGE)
             start = random.randint(0, max(0, horizon - length))
             end = start + length
