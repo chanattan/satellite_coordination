@@ -109,42 +109,56 @@ def integrate_observation(current_plan: Dict[str, List[Tuple[Observation, int]]]
 
 def psi_solve(instance: ESOPInstance) -> Dict[str, Dict[str, List[Tuple[Observation, int]]]]:
     """
-    PSI - Algorithme 2 EXACT de l'article
+    PSI - Algorithme 2 EXACT de l'article (PARALLEL Single-Item)
+    
+    DIFFÉRENCE avec SSI: 
+    - PSI: Calcule TOUS les bids en parallèle au début, trie, puis attribue avec mises à jour
+    - SSI: Calcule les bids séquentiellement tâche par tâche avec mises à jour
+    
+    PSI est PLUS LENT car il calcule |R| × |U| bids d'un coup (coût computationnel élevé)
+    même si conceptuellement c'est "parallèle".
     
     Data: An EOSCSP P = ⟨S, U, R, O⟩
     Result: An assignment M
     """
-    # Ligne 1: Mu0 ← ∅
+    # Ligne 1-2: Initialisation
     exclusive_users = [u for u in instance.users if u.uid != "u0"]
     user_plans = {u.uid: greedy_schedule_P_u(instance, u.uid) for u in exclusive_users}
-    Mu0 = {}  # Plan collecté par u0
+    Mu0 = {}
     
-    # Ligne 3-4: for each r ∈ R do Bu[r], σu[r] ← bid(r, Mu) // send Bu, σu to u0
+    # Ligne 3-4: TOUS les bids calculés EN PARALLÈLE (coût: |R| × |U| appels à bid())
     u0_tasks = [t for t in instance.tasks if t.owner == "u0"]
+    all_bids = []
+    
     for r in u0_tasks:
         bids_r = {u.uid: bid(u.uid, instance, r, user_plans) for u in exclusive_users}
         
         if not bids_r:
             continue
             
-        # Ligne 6: w ← arg maxu∈Uex {Bu[r]}
         winner_id = max(bids_r, key=lambda uid: bids_r[uid][0])
         winner_bid, sigma_w = bids_r[winner_id]
         
         if sigma_w is None or winner_bid <= 0:
             continue
-            
-        # Ligne 7: Mu0 ← Mu0 ∪ {σw[r]}
+        
+        all_bids.append((winner_bid, r.tid, winner_id, sigma_w))
+    
+    # Ligne 5: Trier par bid décroissant
+    all_bids.sort(key=lambda x: (-x[0], x[1]))
+    
+    # Ligne 6-8: Attribution avec mises à jour des plans
+    for bid_value, task_id, winner_id, sigma_w in all_bids:
         obs, t = sigma_w
         sid = obs.satellite
         Mu0.setdefault(sid, []).append(sigma_w)
         
-        # Ligne 8: Mw ← Mw ⊕ σw[r] // send Mw[r] to w
+        # Mise à jour du plan du gagnant (ligne 8 de l'algo)
         user_plans[winner_id] = integrate_observation(
             user_plans[winner_id], sigma_w, instance
         )
     
-    # Ligne 9: Mu0 ← solve(P[u0|Mu0])
+    # Ligne 9: Planification finale de u0
     inst_u0_fixed = create_instance_with_fixed_observations(instance, Mu0)
     final_u0_plan = greedy_schedule(inst_u0_fixed).get("u0", {})
     
