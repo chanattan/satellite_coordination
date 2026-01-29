@@ -148,7 +148,7 @@ def generate_ESOP_instance(
     capacity: int = 20,
     seed: int = None,
     scenario: str = "generic",   # "generic", "small_scale", "large_scale",
-    one_exclusive_window_per_satellite=False # si True, chaque utilisateur exclusif a au plus une exclusive par satellite
+    one_exclusive_user_per_satellite=False # si True, chaque satellite a au plus un utilisateur exclusif
 ) -> ESOPInstance:
     """
     Génère une instance ESOP fidèle au modèle de l'article.
@@ -291,7 +291,7 @@ def generate_ESOP_instance(
         uid = f"u{u_idx+1}"
         exclusive_windows: List[ExclusiveWindow] = []
 
-        if one_exclusive_window_per_satellite:
+        if one_exclusive_user_per_satellite:
             taken_sats = attributed_sats.get(uid, None)
             if taken_sats is not None:  # cet utilisateur a déjà un satellite attribué
                 sat = next(s for s in satellites if s.sid == attributed_sats[uid])
