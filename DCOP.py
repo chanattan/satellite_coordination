@@ -1,43 +1,48 @@
 import subprocess
 import re
 from InstanceGenerator import generate_DCOP_instance
-from ESOPInstance import ESOPInstance
 import time
+import json
+from GreedySolver import greedy_schedule_P_u as greedy_schedule_for_user
+from ESOPInstance import Observation, Task, ESOPInstance, User
+import yaml
 
 def save_dcop_instance(dcop):
-    """
-    Sauvegarde l'instance DCOP au format YAML dans un fichier "esop_dcop.yaml".
-    """
     with open("esop_dcop.yaml", "w") as f:
         f.write(dcop)
 
-def run_pydcop_solve(yaml_path: str, algo: str = "dpop") -> str:
+def run_pydcop_solve(yaml_path, algo = "dpop", timeout = 60):
     """
-    Lance 'pydcop solve --algo {algo} {yaml_path}' et renvoie stdout sous forme de string.
+        Lance le subprocess 'pydcop solve --algo {algo} {yaml_path}' avec timeout.
     """
     cmd = ["pydcop", "solve", "--algo", algo, yaml_path]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=timeout)
         return result.stdout
+    except subprocess.TimeoutExpired:
+        print(f"Timeout PyDCOP > {timeout}s")
+        return None
     except subprocess.CalledProcessError as e:
-        print(f"Erreur lors de l'exécution de pydcop: {e}")
-        print(f"Stderr: {e.stderr}")
+        print(f"Erreur PyDCOP : {e}")
         return None
     except FileNotFoundError:
-        print("Erreur: pydcop n'est pas installé ou n'est pas dans le PATH")
-        print("Installez-le avec: pip install pydcop")
+        print("Erreur file not found error.")
         return None
 
-import json
-import re
-from typing import Dict
-
-
-def parse_assignment_from_output(output: str) -> Dict[str, int]:
-    """
-    Parse l'assignement des variables depuis la sortie JSON de pydcop solve.
+def extract_time_from_output(output):
+    if output is None or output.strip() == "":
+        return 0.0
     
-    La sortie de pyDCOP est capturée au format JSON pour réafficher proprement la section assignment.
+    try:
+        data = json.loads(output)
+        return data.get('time', 0.0)
+    except:
+        return 0.0
+
+def parse_assignment_from_output(output):
+    """
+        Parse l'assignement des variables depuis la sortie JSON de pydcop solve.
+        La sortie de pyDCOP est capturée au format JSON pour réafficher proprement la section assignment.
     """
     if output is None or output.strip() == "":
         return {}
@@ -46,14 +51,11 @@ def parse_assignment_from_output(output: str) -> Dict[str, int]:
     
     try:
         data = json.loads(output)
-        
-        # extraction de la section assignment
         if "assignment" in data:
             assignment = data["assignment"]
             assignment = {k: int(v) for k, v in assignment.items()}
         
         return assignment
-    
     except json.JSONDecodeError:
         print("Parsing JSON échoué -> parsing manuel")
         
@@ -77,16 +79,23 @@ def parse_assignment_from_output(output: str) -> Dict[str, int]:
         
         return assignment
 
-
-def print_assignment_summary(instance, assignment: Dict[str, int]):
-    """
-    Affiche un résumé clair de l'assignement du DCOP.
-    """
-    print("="*70)
-    print("RÉSUMÉ DES RÉSULTATS DU DCOP")
-    print("="*70 + "\n")
+def extract_metrics_from_output(output):
+    if output is None or output.strip() == "":
+        return 0, 0
     
-    # map observation_id -> observation
+    try:
+        data = json.loads(output)
+        nb_messages = data.get('msg_count', 0)
+        comm_load = data.get('msg_size', 0)
+        return nb_messages, comm_load
+    except:
+        return 0, 0
+
+
+def print_assignment_summary(instance, assignment):
+    print("---------------")
+    print("Résultats DCOP")
+    
     obs_by_id = {o.oid: o for o in instance.observations}
     
     # Grouper par utilisateur exclusif
@@ -97,7 +106,6 @@ def print_assignment_summary(instance, assignment: Dict[str, int]):
         if value != 1:
             continue
         
-        # Parser : x_{u_id}_{o_id}
         try:
             _, u_id, o_id = var_name.split("_", 2)
         except ValueError:
@@ -115,99 +123,81 @@ def print_assignment_summary(instance, assignment: Dict[str, int]):
         total_reward += obs.reward
     
     if not user_allocations:
-        print("  Aucune observation allouée aux utilisateurs exclusifs.\n")
+        print("> Aucune observation allouée aux utilisateurs exclusifs.\n")
     else:
         print(f"Observations allouées aux utilisateurs exclusifs:")
-        print(f"{'-'*70}\n")
+        print("-------------------------")
         
         for u_id in sorted(user_allocations.keys()):
             observations = user_allocations[u_id]
             user_reward = sum(o.reward for o in observations)
             
-            print(f"  {u_id}:")
-            print(f"    Nombre d'observations : {len(observations)}")
-            print(f"    Récompense totale : {user_reward}")
-            print(f"    Observations : ")
+            print(f"> {u_id}:")
+            print(f"-> Nombre d'observations : {len(observations)}")
+            print(f"-> Récompense totale : {user_reward}")
+            print(f"-> Observations : ")
             
             for obs in observations:
-                print(f"      - {obs.oid} (task={obs.task_id}, reward={obs.reward}, sat={obs.satellite})")
+                print(f"    -> {obs.oid} (task={obs.task_id}, reward={obs.reward}, sat={obs.satellite})")
             print()
     
-    print(f"TOTAL : {sum(len(obs_list) for obs_list in user_allocations.values())} observations allouées")
-    print(f"RÉCOMPENSE TOTALE : {total_reward}\n")
-    print("="*70 + "\n")
+    print(f"Total : {sum(len(obs_list) for obs_list in user_allocations.values())} ; observations allouées")
+    print(f"Récompense totale : {total_reward}\n")
     
     return user_allocations, total_reward
 
-
-def print_dcop_metrics(output: str):
-    """
-    Affiche les métriques de résolution du DCOP.
-    """
+def print_dcop_metrics(output):
     try:
         data = json.loads(output)
         
-        print("="*70)
-        print("MÉTRIQUES DE RÉSOLUTION DCOP")
-        print("="*70 + "\n")
-        
-        print(f"  Statut: {data.get('status', 'UNKNOWN')}")
-        print(f"  Coût final: {data.get('cost', 'N/A')}")
-        print(f"  Violation: {data.get('violation', 'N/A')}")
-        print(f"  Cycles: {data.get('cycle', 'N/A')}")
-        print(f"  Temps de calcul: {data.get('time', 'N/A')} secondes")
-        print(f"  Nombre de messages: {data.get('msg_count', 'N/A')}")
-        print(f"  Taille des messages: {data.get('msg_size', 'N/A')} bytes\n")
-        
-        print("="*70 + "\n")
+        print("Métriques de résolution DCOP")
+        print(f"> Statut: {data.get('status', 'UNKNOWN')}")
+        print(f"> Coût final: {data.get('cost', 'N/A')}")
+        print(f"> Violation: {data.get('violation', 'N/A')}")
+        print(f"> Cycles: {data.get('cycle', 'N/A')}")
+        print(f"> Temps de calcul: {data.get('time', 'N/A')} secondes")
+        print(f"> Nombre de messages: {data.get('msg_count', 'N/A')}")
+        print(f"> Taille des messages: {data.get('msg_size', 'N/A')} bytes\n")
     except:
         pass
 
-def assignment_to_user_plans(instance: ESOPInstance, assignment: dict):
+def assignment_to_user_plans(instance, assignment):
     """
-    Convertit un assignement DCOP en plannings utilisateurs.
+        Conversion d'un assignement DCOP en plannings utilisateurs.
     """
     user_plans = {}
     for var_name, value in assignment.items():
         if value != 1:
             continue
-        # variable x_{u_id}_{o_id}
         try:
             _, u_id, o_id = var_name.split("_", 2)
-        except ValueError:
-            # variable qui ne respecte pas ce schéma
+        except ValueError: # problème parsing ici sinon...
             continue
 
-        # retrouver l'observation
         try:
             obs = next(o for o in instance.observations if o.oid == o_id)
         except StopIteration:
             continue
 
         user_plans.setdefault(u_id, {}).setdefault(obs.satellite, []).append((obs, None))
-
     return user_plans
 
-def validate_dcop_functions(dcop_yaml: str) -> bool:
+
+def validate_dcop_functions(dcop_yaml):
     """
-    Tests pour valider que toutes les fonctions du DCOP retournent bien des valeurs.
+        Validation du YAML associé au DCOP.
     """
     print("Validation des fonctions de contraintes...")
     
-    import re
-    
-    # extraction de toutes les fonctions
     func_pattern = re.compile(r'function: ["\'](.+?)["\']', re.DOTALL)
     functions = func_pattern.findall(dcop_yaml)
     
     errors = []
     for i, func_str in enumerate(functions):
-        # check qu'il y a au moins un return
-        if 'return' not in func_str:
+        if 'return' not in func_str: # check qu'il y a au moins un return
             errors.append(f"Fonction {i+1}: Aucune instruction return trouvée")
         
-        # check qu'il n'y a pas de chemins sans return
-        lines = func_str.split('\\n')
+        lines = func_str.split('\\n') # check qu'il n'y a pas de chemins sans return
         if_count = sum(1 for line in lines if 'if ' in line or 'elif ' in line)
         return_count = sum(1 for line in lines if 'return' in line)
         
@@ -225,22 +215,19 @@ def validate_dcop_functions(dcop_yaml: str) -> bool:
 
 def solve_dcop(inst, print_output=True):
     """
-    Résout l'instance ESOP en la transformant en instance DCOP puis en utilisant l'algorithme DPOP avec PyDcop.
+        Résout l'instance ESOP en la transformant en instance DCOP puis en utilisant l'algorithme DPOP avec PyDcop.
     """
     print("\n=== Résolution DCOP avec DPOP ===\n")
     
     yaml_path = "esop_dcop.yaml"
     
-    # Générer le DCOP à partir de l'instance ESOP
     if print_output:
         print("> Génération du DCOP...")
     dcop_yaml = generate_DCOP_instance(inst)
     
-    # Vérification pour valider le format yaml, dont les fonctions
     validate_dcop_functions(dcop_yaml)
-    
-    # Sauvegarde du DCOP en yaml pour exécution manuelle, ici on fera appel à la commande dans Python
     save_dcop_instance(dcop_yaml)
+
     if print_output:
         print(f"> DCOP sauvegardé dans {yaml_path}\n")
     
@@ -252,7 +239,6 @@ def solve_dcop(inst, print_output=True):
     print(f"  - Nombre de variables: {nb_vars}")
     print(f"  - Nombre de contraintes: {nb_constraints}\n")
 
-    # On résout avec PyDcop et on capture la sortie
     if print_output:
         print("Lancement de DPOP...")
     time_start = time.time()
@@ -266,11 +252,9 @@ def solve_dcop(inst, print_output=True):
     
     if print_output:
         print("> Sortie de DPOP:")
-        print("-" * 50)
+        print("-------")
         print(output)
-        print("-" * 50)
 
-    # On parse le résultat pour un affichage plus clair.
     if print_output:
         print("\n> Parsing de la solution...")
     assignment = parse_assignment_from_output(output)
@@ -279,53 +263,36 @@ def solve_dcop(inst, print_output=True):
         print("!!! Aucun résultat trouvé dans la sortie de DPOP.")
         return
     
-    # Résultats
     if print_output:
         print_dcop_metrics(output)
     print_assignment_summary(inst, assignment)
     print("=== Fin de la résolution DCOP ===\n")
 
-    # On recrée l'user plan
     assignment = assignment_to_user_plans(inst, assignment)
     return assignment
 
-from typing import Dict, List, Tuple, Optional
-from GreedySolver import greedy_schedule_P_u as greedy_schedule_for_user
-from ESOPInstance import Observation, Task, ESOPInstance, User
-import yaml
-
-def build_restricted_plan_for_user(instance: ESOPInstance,
-                                   user_id: str,
-                                   extra_obs: Observation,
-                                   accepted_u0_obs):
+def build_restricted_plan_for_user(instance, user_id, extra_obs, accepted_u0_obs):
     """
-    Construit un plan glouton pour user_id en ne considérant que :
-      - ses propres observations,
-      - + accepted_u0_obs (obs de u0 déjà acceptées),
-      - + extra_obs si non None.
-    Retourne un plan {sat_id: [(obs, t_start), ...]}.
+        Construit un plan glouton pour user_id en ne considérant que :
+            - ses propres observations,
+            - + accepted_u0_obs (obs de u0 déjà acceptées),
+            - + extra_obs si non None.
+        retourne le plan par satellite.
     """
-
     user = next(u for u in instance.users if u.uid == user_id)
     sats = instance.satellites
 
-    # Filtrer les obs pertinentes
-    base_obs = [
-        o for o in instance.observations
-        if (o.owner == user_id) or (o in accepted_u0_obs)
-    ]
+    base_obs = [o for o in instance.observations if (o.owner == user_id) or (o in accepted_u0_obs)]
     if extra_obs is not None:
         base_obs = base_obs + [extra_obs]
 
     plan = {s.sid: [] for s in sats}
-
     for sat in sats:
         sat_id = sat.sid
-        # Observations de cette liste sur ce satellite
+        # observations de cette liste sur ce satellite
         candidate_obs = [o for o in base_obs if o.satellite == sat_id]
 
-        # Glouton restreint : même logique que greedy_schedule_for_user_on_satellite
-        candidate_obs.sort(key=lambda o: (-o.reward, o.t_start))
+        candidate_obs.sort(key=lambda o: (-o.reward, o.t_start)) # glouton reward puis earliest
         local_plan = []
 
         def used_capacity():
@@ -342,15 +309,13 @@ def build_restricted_plan_for_user(instance: ESOPInstance,
             sorted_plan = sorted(local_plan, key=lambda p: p[1])
             tau = sat.transition_time
 
-            # avant la première
-            first_obs, first_t = sorted_plan[0]
+            first_obs, first_t = sorted_plan[0] # avant la première
             earliest_start = max(obs.t_start, sat.t_start)
             latest_end = min(obs.t_end, first_t - tau)
             if earliest_start + obs.duration <= latest_end:
                 return earliest_start
 
-            # entre deux
-            for (o_prev, t_prev), (o_next, t_next) in zip(sorted_plan, sorted_plan[1:]):
+            for (o_prev, t_prev), (o_next, t_next) in zip(sorted_plan, sorted_plan[1:]): # entre deux
                 end_prev = t_prev + o_prev.duration
                 start_next = t_next
                 window_start = max(obs.t_start, end_prev + tau, sat.t_start)
@@ -367,6 +332,7 @@ def build_restricted_plan_for_user(instance: ESOPInstance,
                 return window_start
             return None
 
+        # essayer d'insérer chaque observation candidate
         for obs in candidate_obs:
             t_ins = try_insert(obs)
             if t_ins is not None:
@@ -377,20 +343,14 @@ def build_restricted_plan_for_user(instance: ESOPInstance,
 
     return plan
 
-
-def compute_reward_from_plan(plan_for_user: dict) -> int:
+def compute_reward_from_plan(plan_for_user):
     return sum(obs.reward for sat_plan in plan_for_user.values() for (obs, _) in sat_plan)
 
-
-def compute_pi(instance: ESOPInstance,
-               user_id: str,
-               obs: Observation,
-               current_accepted_u0_obs):
+def compute_pi(instance, user_id, obs, current_accepted_u0_obs):
     """
-    π(o, M_u) = coût marginal pour user_id si il accepte obs de u0.
-    M_u est implicite via current_accepted_u0_obs (les requêtes déjà acceptées).
+        pi(o, M_u) de l'article = coût marginal pour user_id s'il accepte obs de u0.
+        M_u est implicite via current_accepted_u0_obs (les requêtes déjà acceptées).
     """
-
     # Plan avant : propres obs + accepted_u0_obs
     plan_before = build_restricted_plan_for_user(instance, user_id, None, current_accepted_u0_obs)
     reward_before = compute_reward_from_plan(plan_before)
@@ -405,7 +365,18 @@ def compute_pi(instance: ESOPInstance,
     gain = reward_after - reward_before
     return -gain  # DPOP minimise
 
-def generate_sdcop_yaml_for_request(instance, request, current_accepted, yaml_path):
+pi_cache = {}
+
+def clear_pi_cache():
+    global pi_cache
+    pi_cache = {}
+
+def __generate_sdcop_yaml_for_request(instance, request, current_accepted, yaml_path): #outdated
+    """
+        Génère le fichier YAML pour le s-dcop d'une requête du central.
+    """
+    global pi_cache
+    
     exclusive_users = [u for u in instance.users if u.uid != "u0"]
     obs_r = [o for o in request.opportunities if o.owner == "u0"]
 
@@ -428,12 +399,21 @@ def generate_sdcop_yaml_for_request(instance, request, current_accepted, yaml_pa
             if not can_take:
                 continue
 
-            pi_val = compute_pi(instance, u_id, o, accepted_for_u)
+            # cache opti. key avec IDs d'observations
+            accepted_ids = tuple(sorted([obs.oid for obs in accepted_for_u]))
+            cache_key = (u_id, o.oid, accepted_ids)
+
+            if cache_key in pi_cache:
+                pi_val = pi_cache[cache_key]
+            else:
+                pi_val = compute_pi(instance, u_id, o, accepted_for_u)
+                pi_cache[cache_key] = pi_val
+
             if pi_val is None:
                 continue
 
             v_name = f"x_{u_id}_{o.oid}"
-            variables[v_name] = {"domain": "binary", "agent": u_id}
+            variables[v_name] = {"domain": "binary"}
             var_names.append(v_name)
 
             c_name = f"c_pi_{u_id}_{o.oid}"
@@ -445,17 +425,27 @@ def generate_sdcop_yaml_for_request(instance, request, current_accepted, yaml_pa
     if not var_names:
         return False
 
+    # Contrainte au plus 1
     total_expr = " + ".join(var_names) if len(var_names) > 1 else var_names[0]
     constraints[f"c_atmost1_{request.tid}"] = {
         "type": "intention",
         "function": f"0 if {total_expr} <= 1 else 1e9"
     }
+    
+    # agents auxiliaires pour dcop
+    nb_computations = len(variables) + len(constraints)
+    agents_list = list(set(agents)) # remove duplicate
+    
+    while len(agents_list) < nb_computations:
+        agents_list.append(f"aux_{len(agents_list)}")
+    
+    agents_with_capacity = {agent_id: {"capacity": 1000} for agent_id in agents_list}
 
     dcop_dict = {
         "name": f"sdcop_{request.tid}",
         "objective": "min",
         "domains": {"binary": {"values": [0, 1]}},
-        "agents": agents,
+        "agents": agents_with_capacity,
         "variables": variables,
         "constraints": constraints
     }
@@ -466,88 +456,18 @@ def generate_sdcop_yaml_for_request(instance, request, current_accepted, yaml_pa
     return True
 
 
-def __sdcop_with_pydcop(instance: ESOPInstance,
-                      algo: str = "dpop",
-                      base_yaml_name: str = "sdcop_req"):
-
-    exclusive_users = [u for u in instance.users if u.uid != "u0"]
-    current_accepted: dict[str, list[Observation]] = {u.uid: [] for u in exclusive_users}
-
-    central_requests = [r for r in instance.tasks if r.owner == "u0"]
-    central_requests.sort(key=lambda r: r.t_end)
-
-    assignments_global = []
-    avg_time_per_request = []
-
-    for r in central_requests:
-        yaml_path = f"{base_yaml_name}_{r.tid}.yaml"
-
-        ok = generate_sdcop_yaml_for_request(instance, r, current_accepted, yaml_path)
-        if not ok:
-            continue
-
-        time_start = time.time()
-        output = run_pydcop_solve(yaml_path, algo=algo)
-        time_end = time.time()
-        avg_time_per_request.append(time_end - time_start)
-        if output is None:
-            continue
-
-        assignment = parse_assignment_from_output(output)
-        if not assignment:
-            continue
-
-        for var_name, val in assignment.items():
-            if val != 1:
-                continue
-            try:
-                _, u_id, o_id = var_name.split("_", 2)
-            except ValueError:
-                continue
-
-            try:
-                obs = next(o for o in instance.observations if o.oid == o_id)
-            except StopIteration:
-                continue
-
-            current_accepted[u_id].append(obs)
-            assignments_global.append((r.tid, u_id, obs))
-            break
-
-    # Construire les plans finaux des exclusifs à partir de accepted
-    final_plans = {}
-    for u in exclusive_users:
-        u_id = u.uid
-        final_plans[u_id] = build_restricted_plan_for_user(
-            instance, u_id,
-            extra_obs=None,
-            accepted_u0_obs=current_accepted[u_id]
-        )
-    
-    # Clean les fichiers yaml temporaires
-    import os
-    for r in central_requests:
-        yaml_path = f"{base_yaml_name}_{r.tid}.yaml"
-        if os.path.exists(yaml_path):
-            os.remove(yaml_path)
-
-    return final_plans, assignments_global, (sum(avg_time_per_request) / len(avg_time_per_request) if avg_time_per_request else 0)
-
-
 def recompute_plan_with_obs(instance, user_id):
     """
-    Recalcule un plan complet pour user_id en relançant le planificateur glouton sur l'instance ESOP.
+        Recalcule un plan complet pour user_id en relançant le planificateur glouton sur l'instance ESOP.
     """
     return greedy_schedule_for_user(instance, user_id)
 
 
 def pi_for_observation(instance, user_id, current_plan):
     """
-    Calcule pi(o, M_u) = coût marginal (négatif du gain de reward) pour user_id, en replanifiant complètement.
-
+    Calcule pi(o, M_u) = coût marginal pour user_id avec replanif. complète.
     Retourne None si ça n'apporte aucun gain.
     """
-
     reward_before = compute_reward_from_plan(current_plan)
 
     new_plan = recompute_plan_with_obs(instance, user_id)
@@ -556,42 +476,31 @@ def pi_for_observation(instance, user_id, current_plan):
     if reward_after <= reward_before:
         # Aucun gain ou perte -> on ignore cette opportunité
         return None
-
     gain = reward_after - reward_before
     # DCOP minimise le coût -> coût = -gain
     return -gain
 
 def solve_request_with_dcop_exact(instance, request, current_plans, exclusive_users):
     """
-    Résout le DCOP pour une requête centrale 'request' (s-dcop simplifié).
-
-    current_plans : {u_id -> {sat_id -> [(obs, t_start), ...]}}
-    exclusive_users : liste des users exclusifs (uid != "u0")
-
-    Retourne (winner_user_id, chosen_observation) ou (None, None).
+        Résout le DCOP pour une requête centrale.
+        Retourne (winner_user_id, chosen_observation) ou (None, None).
     """
 
-    # Opportunités de cette requête (theta_r)
+    # Opportunités de cette requête
     observations_r = [o for o in request.opportunities if o.owner == "u0"]
 
     best_cost = None
-    best_choice: Tuple[Optional[str], Optional[Observation]] = (None, None)
-
+    best_choice = (None, None)
     for obs in observations_r:
         for u in exclusive_users:
             u_id = u.uid
 
             # Vérifier qu'il existe au moins une fenêtre exclusive compatible
-            can_take = any(
-                w.satellite == obs.satellite and
-                not (w.t_end <= obs.t_start or w.t_start >= obs.t_end)
-                for w in u.exclusive_windows
-            )
+            can_take = any(w.satellite == obs.satellite and not (w.t_end <= obs.t_start or w.t_start >= obs.t_end) for w in u.exclusive_windows)
             if not can_take:
                 continue
 
-            # Plan courant de u
-            plan_u = current_plans.get(u_id)
+            plan_u = current_plans.get(u_id) # plan courant de u
             if plan_u is None:
                 plan_u = greedy_schedule_for_user(instance, u_id)
                 current_plans[u_id] = plan_u
@@ -603,25 +512,16 @@ def solve_request_with_dcop_exact(instance, request, current_plans, exclusive_us
             if best_cost is None or cost < best_cost:
                 best_cost = cost
                 best_choice = (u_id, obs)
-
     return best_choice
 
-
-def s_dcop_solve(instance):
+def __s_dcop_solve(instance): # outdated
     """
-    Implémentation simplifiée de l'algorithme s-dcop (article) en Python pur.
+        Implémentation de l'algorithme s-dcop (article).
 
-    - On calcule d'abord les plans locaux M_u pour tous les utilisateurs exclusifs.
-    - Pour chaque requête du central (u0), on choisit (u, o) qui maximise
-      le gain de reward via pi(o, M_u).
-    - On met à jour M_u pour le gagnant en replanifiant.
-
-    Retourne :
-      - current_plans : {u_id -> plan utilisateur}
-      - assignments : liste de tuples (request_id, user_id, observation)
+        1. On calcule d'abord les plans locaux M_u pour tous les utilisateurs exclusifs.
+        2. Pour chaque requête du central (u0), on choisit (u, o) qui maximise le gain de reward via pi(o, M_u).
+        3. On met à jour M_u pour le gagnant en replanifiant.
     """
-
-    # Utilisateurs exclusifs
     exclusive_users = [u for u in instance.users if u.uid != "u0"]
 
     # Plans initiaux M_u (problèmes P[u])
@@ -634,21 +534,85 @@ def s_dcop_solve(instance):
     central_requests.sort(key=lambda r: r.t_end)
 
     assignments = []
-
     for r in central_requests:
-        winner_u, chosen_obs = solve_request_with_dcop_exact(
-            instance,
-            r,
-            current_plans,
-            exclusive_users
-        )
-
+        winner_u, chosen_obs = solve_request_with_dcop_exact(instance, r, current_plans, exclusive_users)
         if winner_u is not None and chosen_obs is not None:
-            # Mettre à jour le plan du gagnant
+            # mise à jour du plan du gagnant
             current_plans[winner_u] = greedy_schedule_for_user(instance, winner_u)
             assignments.append((r.tid, winner_u, chosen_obs))
 
     return current_plans, assignments
 
+def test_pydcop_output():
+    print("test minimal : sortie PyDCOP")
 
+    dcop_yaml = """
+        name: test_minimal
+        objective: min
+        domains:
+        binary:
+            values: [0, 1]
+        agents: [u1, u2]
+        variables:
+        x1:
+            domain: binary
+            agent: u1
+        x2:
+            domain: binary
+            agent: u2
+        constraints:
+        c1:
+            type: intention
+            function: x1 + x2
+        """
+    
+    yaml_path = "test_dcop_minimal.yaml"
+    with open(yaml_path, "w") as f:
+        f.write(dcop_yaml)
+    
+    print(f"> DCOP minimal sauvegardé dans {yaml_path}")
+    print("> Lancement de DPOP...\n")
+    
+    import subprocess
+    cmd = ["pydcop", "solve", "--algo", "dpop", yaml_path]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=20)
+        output = result.stdout
+        #output = run_pydcop_solve(yaml_path, algo="dpop", timeout=20)
+        
+        if output:
+            print("sortie pydcop :")
+            print(output)
+            
+            try:
+                import json
+                data = json.loads(output)
+                print("\nParsing JSON réussi !")
+                print(f"- msg_count: {data.get('msg_count', 'NON TROUVÉ')}")
+                print(f"- msg_size: {data.get('msg_size', 'NON TROUVÉ')}")
+                print(f"- time: {data.get('time', 'NON TROUVÉ')}")
+                print(f"- cost: {data.get('cost', 'NON TROUVÉ')}")
+                print(f"- status: {data.get('status', 'NON TROUVÉ')}")
+                
+                print("\n> Clés JSON :")
+                for key in data.keys():
+                    print(f"  - {key}: {data[key]}")
+                    
+            except json.JSONDecodeError as e:
+                print(f"Erreur parsing JSON : {e}")
+        else:
+            print("Pas de sortie de PyDCOP")
+            print(output.stderr)
+                
+    except subprocess.TimeoutExpired:
+        print("TIMEOUT") # instance trop complexe ?
+    except Exception as e:
+        print(f"Erreur : {e}")
+    
+    import os
+    if os.path.exists(yaml_path):
+        os.remove(yaml_path)
 
+if __name__ == "__main__":
+    test_pydcop_output()

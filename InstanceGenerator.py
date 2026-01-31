@@ -1,12 +1,8 @@
 from ESOPInstance import *
-from typing import Dict, List
 import random
 import yaml
 
 def print_user_plans(user_plans):
-    """
-    Affiche les plannings utilisateurs.
-    """
     if not user_plans:
         print("Aucun planning généré.")
         return
@@ -14,55 +10,41 @@ def print_user_plans(user_plans):
     for u_id, plan in user_plans.items():
         print(f"Planning pour l'utilisateur {u_id}:")
         for sat_id, observations in plan.items():
-            print(f"  Sur le satellite {sat_id}:")
+            print(f"- Sur le satellite {sat_id}:")
             for obs, _ in observations:
-                print(f"    > Observation {obs.oid} (reward: {obs.reward})")
+                print(f" -> Observation {obs.oid} (reward: {obs.reward})")
         
         # Calculer le score total pour cet utilisateur
         total_reward = sum(obs.reward for sat_obs in plan.values() for obs, _ in sat_obs)
-        print(f"  Score total: {total_reward}\n")
+        print(f"> Score total: {total_reward}\n")
 
-def generate_DCOP_instance(instance: ESOPInstance) -> str:
+def generate_DCOP_instance(instance):
     """
-    Génère une instance DCOP à partir d'une instance ESOP donnée.
-    Utilise la syntaxe "expression" directe de pyDCOP pour les contraintes.
+        Génère une instance DCOP à partir d'une instance ESOP donnée.
     """
-
-    # Agents : tous les utilisateurs exclusifs
-    agents = [u.uid for u in instance.users if u.uid != "u0"]
+    agents = [u.uid for u in instance.users if u.uid != "u0"] # tous les utilisateurs exclusifs
 
     # Variables x_{u,o} pour les observations du central
     central_observations = [o for o in instance.observations if o.owner == "u0"]
-    exclusives_by_user: Dict[str, List[ExclusiveWindow]] = {
-        u.uid: u.exclusive_windows for u in instance.users if u.uid != "u0"
-    }
+    exclusives_by_user = {u.uid: u.exclusive_windows for u in instance.users if u.uid != "u0"}
     obs_by_id = {o.oid: o for o in instance.observations}
 
     variables_section = {}
-    vars_by_obs: Dict[str, List[str]] = {}
-    vars_by_user_sat: Dict[tuple, List[str]] = {}
-
+    vars_by_obs = {}
+    vars_by_user_sat = {}
     for o in central_observations:
         for u_id, windows in exclusives_by_user.items():
-            has_excl = any(
-                w.satellite == o.satellite and not (w.t_end <= o.t_start or w.t_start >= o.t_end)
-                for w in windows
-            )
-            if not has_excl:
-                continue
+            has_excl = any(w.satellite == o.satellite and not (w.t_end <= o.t_start or w.t_start >= o.t_end) for w in windows)
+            if not has_excl: continue
 
             v_name = f"x_{u_id}_{o.oid}"
-            variables_section[v_name] = {
-                "domain": "binary",
-                "agent": u_id
-            }
+            variables_section[v_name] = {"domain": "binary", "agent": u_id}
 
             vars_by_obs.setdefault(o.oid, []).append(v_name)
             key = (u_id, o.satellite)
             vars_by_user_sat.setdefault(key, []).append(v_name)
 
     constraints_section = {}
-
     # au plus une par observation
     for o in central_observations:
         if o.oid not in vars_by_obs:
@@ -74,10 +56,7 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
         total_expr = " + ".join(vnames) if len(vnames) > 1 else vnames[0]
         expression = f"0 if {total_expr} <= 1 else 1e9"
 
-        constraints_section[c_name] = {
-            "type": "intention",
-            "function": expression
-        }
+        constraints_section[c_name] = {"type": "intention", "function": expression}
 
     # capacité par (u, s)
     sat_capacity = {s.sid: s.capacity for s in instance.satellites}
@@ -89,12 +68,8 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
         total_expr = " + ".join(vnames) if len(vnames) > 1 else vnames[0]
         expression = f"0 if {total_expr} <= {cap} else 1e9"
 
-        constraints_section[c_name] = {
-            "type": "intention",
-            "function": expression
-        }
+        constraints_section[c_name] = {"type": "intention", "function": expression}
 
-    # rewards unaires
     for v_name in variables_section.keys():
         _, u_id, oid = v_name.split("_", 2)
         o = obs_by_id[oid]
@@ -103,11 +78,7 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
 
         # syntaxe expression directe pour unaire
         expression = f"{-rew} * {v_name}"
-
-        constraints_section[c_name] = {
-            "type": "intention",
-            "function": expression
-        }
+        constraints_section[c_name] = {"type": "intention", "function": expression}
 
     # Ajouter agents auxiliaires pour la distribution (contrainte PyDcop pour nb agents suffisant)
     nb_vars = len(variables_section)
@@ -122,11 +93,7 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
     dcop_dict = {
         "name": "esop_dcop",
         "objective": "min",
-        "domains": {
-            "binary": {
-                "values": [0, 1]
-            }
-        },
+        "domains": {"binary": {"values": [0, 1]}},
         "agents": real_agents,
         "variables": variables_section,
         "constraints": constraints_section
@@ -135,21 +102,16 @@ def generate_DCOP_instance(instance: ESOPInstance) -> str:
     yaml_str = yaml.dump(dcop_dict, sort_keys=False)
     return yaml_str
 
-from typing import List, Tuple
-import random
-from ESOPInstance import ESOPInstance, Satellite, User, ExclusiveWindow, Task, Observation
-
-
 def generate_ESOP_instance(
-    nb_satellites: int,
-    nb_users: int,          # nb d'utilisateurs exclusifs (hors u0)
-    nb_tasks: int,
-    horizon: int = 300,
-    capacity: int = 20,
-    seed: int = None,
-    scenario: str = "generic",   # "generic", "small_scale", "large_scale",
-    one_exclusive_user_per_satellite=False # si True, chaque satellite a au plus un utilisateur exclusif
-) -> ESOPInstance:
+    nb_satellites,
+    nb_users, # nb d'utilisateurs exclusifs (hors u0)
+    nb_tasks,
+    horizon = 300,
+    capacity = 20,
+    seed = None,
+    scenario = "generic", # "generic", "small_scale", "large_scale",
+    one_exclusive_user_per_satellite=False # si True, chaque satellite a au plus un utilisateur exclusif par satellite
+):
     """
     Génère une instance ESOP fidèle au modèle de l'article.
 
@@ -157,27 +119,22 @@ def generate_ESOP_instance(
     - U : u0 (central, sans exclusives) + u1..u_nb_users (exclusifs, avec exclusive_windows).
     - R : nb_tasks requêtes, réparties entre u0 et les exclusifs selon le scénario.
     - O : opportunités pour chaque requête :
-        * pour un exclusif ui : chaque observation est incluse dans UNE de ses exclusives,
+        - pour un exclusif ui : chaque observation est incluse dans UNE de ses exclusives,
           rewards élevés pour garantir la priorité.
-        * pour u0 : mix d'opportunités dans les exclusives (partage) et hors exclusives,
+        - pour u0 : mix d'opportunités dans les exclusives (partage) et hors exclusives,
           rewards plus faibles.
 
     Le paramètre `scenario` permet de se rapprocher des configurations de la section 6 :
-      - "generic"     : valeurs par défaut raisonnables.
+      - "generic" : valeurs par défaut set en params.
       - "small_scale" : proche des "highly conflicting small-scale problems".
       - "large_scale" : proche des "realistic large-scale problems".
     
     Le paramètre one_exclusive_window_per_satellite permet de forcer au plus une un utilisateur exclusif par satellite.
     """
-
     if seed is not None:
         random.seed(seed)
 
-    # ------------------------------------------------------------------
-    # Paramètres par scénario (section 6)
-    # ------------------------------------------------------------------
-
-    if scenario == "small_scale":
+    if scenario == "small_scale": # figure 4 article
         # 5 min horizon dans l'article, avec horizon=300 ici
         EXCL_WINDOWS_PER_USER = 8
         EXCL_WINDOW_LENGTH_RANGE = (15, 20)
@@ -202,9 +159,8 @@ def generate_ESOP_instance(
 
         # Horizon
         horizon = 300
-
-    elif scenario == "large_scale":
-        # 6 heures ~ 21600s dans le papier ; horizon paramétrable
+    elif scenario == "large_scale": # figure 5 article
+        # 6 heures environ 21600s dans le papier ; horizon paramétrable
         EXCL_WINDOWS_PER_USER = 10
         EXCL_WINDOW_LENGTH_RANGE = (300, 600)
 
@@ -218,12 +174,26 @@ def generate_ESOP_instance(
         TASK_WINDOW_MIN_LENGTH = 40  # fenêtres obs ~40–60
 
         # Rewards, même logique : exclusifs >> central
-        REWARD_EXCLUSIVE_RANGE = (500, 1000)
+        REWARD_EXCLUSIVE_RANGE = (10, 50)
         REWARD_CENTRAL_RANGE = (1, 5)
 
         PROB_U0_IN_EXCLUSIVE = 0.7
+    elif scenario == "custom_scale":
+        EXCL_WINDOWS_PER_USER = 8
+        EXCL_WINDOW_LENGTH_RANGE = (30, 60) # plus de place par défaut
+        
+        # RÉDUIT le nombre d'obs des exclusifs
+        PROB_TASK_FOR_U0 = 0.7 # + de tasks pour u0
+        
+        NB_OPPS_RANGE = (5, 10)
+        DURATION_RANGE = (3, 5) 
 
-    else:  # "generic"
+        TASK_WINDOW_MIN_LENGTH = 10  # fenêtres obs env. 40–60
+        
+        REWARD_EXCLUSIVE_RANGE = (10, 30)
+        REWARD_CENTRAL_RANGE = (15, 40)
+        PROB_U0_IN_EXCLUSIVE = 0.7
+    else: # generic
         EXCL_WINDOWS_PER_USER = 1
         EXCL_WINDOW_LENGTH_RANGE = (15, 60)
 
@@ -237,37 +207,22 @@ def generate_ESOP_instance(
         REWARD_CENTRAL_RANGE = (1, 10)
 
         PROB_U0_IN_EXCLUSIVE = 0.7
-
-    # ------------------------------------------------------------------
-    # 1) Satellites
-    # ------------------------------------------------------------------
-    satellites: List[Satellite] = []
+    
+    satellites = []
     for i in range(nb_satellites):
-        satellites.append(
-            Satellite(
-                sid=f"s{i}",
-                t_start=0,
-                t_end=horizon,
-                capacity=capacity,
-                transition_time=1,
-            )
-        )
+        satellites.append(Satellite(sid=f"s{i}", t_start=0, t_end=horizon, capacity=capacity, transition_time=1))
 
-    # ------------------------------------------------------------------
-    # 2) Utilisateurs
-    # ------------------------------------------------------------------
-    users: List[User] = []
+    users = []
     users.append(User(uid="u0", exclusive_windows=[]))  # central
-    attributed_sats = dict()  # pour one_exclusive_window_per_satellite
+    attributed_sats = dict() # pour one_exclusive_window_per_satellite
 
     # pour garantir l'absence d'overlap des exclusives sur un même satellite,
     # on garde pour chaque sat la liste des intervalles déjà utilisés
-    excl_by_sat: Dict[str, List[Tuple[int, int]]] = {s.sid: [] for s in satellites}
+    excl_by_sat = {s.sid: [] for s in satellites}
 
-    def sample_non_overlapping_interval(sid: str, length_range: Tuple[int, int]):
+    def sample_non_overlapping_interval(sid, length_range):
         """
-        Tente de générer une fenêtre [start, end] sur le satellite sid qui ne chevauche aucune fenêtre déjà présente dans excl_by_sat[sid].
-        Retourne (start, end) ou None si on n'y arrive pas après quelques essais.
+            Tente de générer une fenêtre [start, end] sur le satellite sid qui ne chevauche aucune fenêtre déjà présente dans excl_by_sat[sid].
         """
         existing = excl_by_sat[sid]
         # si aucun intervalle, on place librement
@@ -284,16 +239,16 @@ def generate_ESOP_instance(
             end = start + length
             if all(end <= s0 or start >= s1 for (s0, s1) in existing):
                 return (start, end)
-        # échec : on abandonne cette fenêtre
+        # échec......
         return None
 
     for u_idx in range(nb_users):
         uid = f"u{u_idx+1}"
-        exclusive_windows: List[ExclusiveWindow] = []
+        exclusive_windows = []
 
         if one_exclusive_user_per_satellite:
             taken_sats = attributed_sats.get(uid, None)
-            if taken_sats is not None:  # cet utilisateur a déjà un satellite attribué
+            if taken_sats is not None: # cet utilisateur a déjà un satellite attribué
                 sat = next(s for s in satellites if s.sid == attributed_sats[uid])
             else:
                 available_sats = [s for s in satellites if s.sid not in attributed_sats.values()]
@@ -312,9 +267,7 @@ def generate_ESOP_instance(
                     # pas possible de placer plus de fenêtres sur ce sat
                     break
                 start, end = interval
-                exclusive_windows.append(
-                    ExclusiveWindow(satellite=sat.sid, t_start=start, t_end=end)
-                )
+                exclusive_windows.append(ExclusiveWindow(satellite=sat.sid, t_start=start, t_end=end))
                 excl_by_sat[sat.sid].append((start, end))
         else:
             # cas général : l'utilisateur peut avoir plusieurs satellites,
@@ -326,21 +279,15 @@ def generate_ESOP_instance(
                     # impossible de placer une nouvelle fenêtre sur ce sat sans chevauchement
                     continue
                 start, end = interval
-                exclusive_windows.append(
-                    ExclusiveWindow(satellite=sat.sid, t_start=start, t_end=end)
-                )
+                exclusive_windows.append(ExclusiveWindow(satellite=sat.sid, t_start=start, t_end=end))
                 excl_by_sat[sat.sid].append((start, end))
 
         users.append(User(uid=uid, exclusive_windows=exclusive_windows))
 
     exclusive_users = [u for u in users if u.uid != "u0"]
 
-    # ------------------------------------------------------------------
-    # 3) Tâches et observations
-    # ------------------------------------------------------------------
-    tasks: List[Task] = []
-    observations: List[Observation] = []
-
+    tasks = []
+    observations = []
     for t_idx in range(nb_tasks):
         # Répartition des tasks entre u0 et les exclusifs
         if random.random() < PROB_TASK_FOR_U0 or nb_users == 0:
@@ -363,33 +310,25 @@ def generate_ESOP_instance(
         else:
             reward = random.randint(*REWARD_EXCLUSIVE_RANGE)
 
-        task = Task(
-            tid=tid,
-            owner=owner,
-            t_start=t_start,
-            t_end=t_end,
-            duration=duration,
-            reward=reward,
-            opportunities=[],
-        )
+        task = Task(tid=tid, owner=owner, t_start=t_start, t_end=t_end, duration=duration, reward=reward, opportunities=[])
 
         nb_opps = random.randint(*NB_OPPS_RANGE)
 
         for k in range(nb_opps):
             oid = f"o_{tid}_{k}"
 
-            # ---------- Cas 1 : requête d'un utilisateur exclusif ----------
+            # cas où requête d'un utilisateur exclusif
             if owner != "u0":
                 u_owner = next(u for u in users if u.uid == owner)
                 if not u_owner.exclusive_windows:
-                    # cas limite théorique -> on saute
+                    # cas limite, on saute
                     continue
 
                 # toutes les opportunités d'un exclusif doivent être dans UNE de ses exclusives
                 windows = u_owner.exclusive_windows[:]
                 random.shuffle(windows)
                 placed = False
-                sat: Satellite | None = None
+                sat = None
 
                 for w in windows:
                     sat = next(s for s in satellites if s.sid == w.satellite)
@@ -407,7 +346,7 @@ def generate_ESOP_instance(
                     # aucune exclusive ne peut accueillir cette opportunité
                     continue
 
-            # ---------- Cas 2 : requête du central u0 ----------------------
+            # cas où requête du central u0
             else:
                 if exclusive_users and random.random() < PROB_U0_IN_EXCLUSIVE:
                     # opportunité dans une exclusive d'un utilisateur
@@ -425,72 +364,64 @@ def generate_ESOP_instance(
                         else:
                             # pas assez de place dans cette exclusive -> hors exclusives
                             sat = random.choice(satellites)
-                            win_len = random.randint(
-                                duration + 1,
-                                max(duration + 2, t_end - t_start),
-                            )
-                            o_start = random.randint(
-                                t_start, max(t_start, t_end - win_len)
-                            )
+                            win_len = random.randint(duration + 1, max(duration + 2, t_end - t_start))
+                            o_start = random.randint(t_start, max(t_start, t_end - win_len))
                             o_end = min(t_end, o_start + win_len)
                     else:
                         sat = random.choice(satellites)
-                        win_len = random.randint(
-                            duration + 1,
-                            max(duration + 2, t_end - t_start),
-                        )
-                        o_start = random.randint(
-                            t_start, max(t_start, t_end - win_len)
-                        )
+                        win_len = random.randint(duration + 1, max(duration + 2, t_end - t_start))
+                        o_start = random.randint(t_start, max(t_start, t_end - win_len))
                         o_end = min(t_end, o_start + win_len)
                 else:
                     # opportunité de u0 hors de toute exclusive (au moins en intention)
                     sat = random.choice(satellites)
-                    win_len = random.randint(
-                        duration + 1,
-                        max(duration + 2, t_end - t_start),
-                    )
-                    o_start = random.randint(
-                        t_start, max(t_start, t_end - win_len)
-                    )
+                    win_len = random.randint(duration + 1, max(duration + 2, t_end - t_start))
+                    o_start = random.randint(t_start, max(t_start, t_end - win_len))
                     o_end = min(t_end, o_start + win_len)
 
-            obs = Observation(
-                oid=oid,
-                task_id=tid,
-                satellite=sat.sid,
-                t_start=o_start,
-                t_end=o_end,
-                duration=duration,
-                reward=reward,
-                owner=owner,
-            )
+            obs = Observation(oid=oid, task_id=tid, satellite=sat.sid, t_start=o_start, t_end=o_end, duration=duration, reward=reward, owner=owner)
             observations.append(obs)
             task.opportunities.append(obs)
 
         tasks.append(task)
 
-    instance = ESOPInstance(
-        nb_satellites=nb_satellites,
-        nb_users=nb_users,
-        nb_tasks=nb_tasks,
-        horizon=horizon,
-        satellites=satellites,
-        users=users,
-        tasks=tasks,
-        observations=observations,
-    )
+    instance = ESOPInstance(nb_satellites=nb_satellites, nb_users=nb_users, nb_tasks=nb_tasks, horizon=horizon, satellites=satellites, users=users, tasks=tasks, observations=observations)
 
     # Sanity check : toutes les obs d'exclusifs sont dans leurs exclusives
     for o in instance.observations:
         if o.owner == "u0":
             continue
         u = next(u for u in instance.users if u.uid == o.owner)
-        assert any(
-            w.satellite == o.satellite and
-            o.t_start >= w.t_start and
-            o.t_end   <= w.t_end
-            for w in u.exclusive_windows
-        ), f"{o.oid} de {o.owner} hors exclusive"
+        assert any(w.satellite == o.satellite and o.t_start >= w.t_start and o.t_end <= w.t_end for w in u.exclusive_windows), f"{o.oid} de {o.owner} hors exclusive"
 
     return instance
+
+def generate_benchmark_instances(scenario="small_scale", num_instances=30):
+    """
+        génère 30 instances qui matchent les configurations expérimentales de l'article pour le benchmarking.
+    """
+    
+    if scenario == "small_scale":
+        params = {'nb_satellites': 3, 'nb_users': 4, 'nb_tasks': [25, 50, 75, 100, 125, 150]} # 250-1500 obs
+    else: # large_scale
+        params = {'nb_satellites': 8, 'nb_users': 5, 'nb_tasks': [100, 200, 300, 400, 500]} # 500-2500 obs
+    
+    instances = {obs_count: [] for obs_count in params['nb_tasks']}
+    
+    for obs_count in params['nb_tasks']:
+        for seed in range(num_instances):
+            instance = generate_ESOP_instance(nb_satellites=params['nb_satellites'], nb_users=params['nb_users'], nb_tasks=obs_count, scenario=scenario, seed=seed)
+            instances[obs_count].append(instance)
+    
+    return instances
+
+if __name__ == "__main__":
+    from GreedySolver import greedy_schedule
+    instances = generate_benchmark_instances(scenario="small_scale", num_instances=30)
+    for i in instances:
+        # solve with greedy and print plans
+        for inst in instances[i]:
+            plans = greedy_schedule(inst)
+            print_user_plans(plans)
+            score = assess_solution(inst, plans)
+            print(f"Score total pour l'instance : {sum(score.values())}\n")

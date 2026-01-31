@@ -1,15 +1,13 @@
-from typing import Dict, List, Tuple, Any, Optional
 from copy import deepcopy
-from ESOPInstance import ESOPInstance, Observation, Task, User, Satellite
+import sys
+from ESOPInstance import ESOPInstance
 from GreedySolver import greedy_schedule, greedy_schedule_P_u
 
-# =============================================================================
-# FONCTIONS UTILITAIRES (inchangées)
-# =============================================================================
 
-def safe_plan_reward(plan: Dict[str, Dict[str, List[Tuple[Observation, int]]]], 
-                    user_id: str) -> float:
-    """Calcule le reward total d'un plan utilisateur de façon safe"""
+def plan_reward(plan, user_id):
+    """
+        Calcule le reward total d'un plan utilisateur.
+    """
     total = 0
     user_plan = plan.get(user_id, {})
     for sat_plan in user_plan.values():
@@ -17,9 +15,10 @@ def safe_plan_reward(plan: Dict[str, Dict[str, List[Tuple[Observation, int]]]],
             total += sum(obs.reward for obs, _ in sat_plan)
     return total
 
-def safe_get_schedule(plan: Dict[str, Dict[str, List[Tuple[Observation, int]]]], 
-                     task_id: str) -> Optional[Tuple[Observation, int]]:
-    """Extrait le schedule pour une tâche spécifique"""
+def get_schedule(plan, task_id):
+    """
+        Extrait le schedule pour une tâche spécifique
+    """
     for user_plan in plan.values():
         for sat_plan in user_plan.values():
             if isinstance(sat_plan, list):
@@ -28,300 +27,262 @@ def safe_get_schedule(plan: Dict[str, Dict[str, List[Tuple[Observation, int]]]],
                         return obs_t
     return None
 
-def create_instance_with_fixed_observations(instance: ESOPInstance, 
-                                          fixed_obs: Dict[str, List[Tuple[Observation, int]]]) -> ESOPInstance:
-    """Crée une nouvelle instance où certaines observations sont pré-planifiées (P[∅|M])"""
+def create_instance_with_fixed_observations(instance, fixed_obs):
+    """
+        Crée une nouvelle instance où certaines observations sont fixées (notamment pour plan u0)
+    """
     new_inst = deepcopy(instance)
     fixed_tasks = set()
     for sat_plans in fixed_obs.values():
         for obs, _ in sat_plans:
             fixed_tasks.add(obs.task_id)
-    
+
     new_inst.tasks = [t for t in new_inst.tasks if t.tid not in fixed_tasks]
     new_inst.nb_tasks = len(new_inst.tasks)
     new_inst.observations = [o for o in new_inst.observations if o.task_id not in fixed_tasks]
-    
     return new_inst
 
-def bid(u_id: str, instance: ESOPInstance, request: Task, 
-        all_user_plans: Dict[str, Dict[str, List[Tuple[Observation, int]]]]) -> Tuple[float, Optional[Tuple[Observation, int]]]:
+def bid(u_id, instance, request):
     """
-    bid(r, Mu) : gain marginal pour intégrer r dans le plan actuel Mu
+        Calcule l'enchère d'un utilisateur u_id pour une requête donnée.
     """
     u = next((user for user in instance.users if user.uid == u_id), None)
     if u is None:
         return 0.0, None
     
-    # Instance actuelle P[u]
+    # UNIQUEMENT tâches/obs de u
     tasks_u = [t for t in instance.tasks if t.owner == u_id]
     obs_u = [o for o in instance.observations if o.owner == u_id]
+    inst_u = ESOPInstance(nb_satellites=instance.nb_satellites, nb_users=1, nb_tasks=len(tasks_u),
+                        horizon=instance.horizon, satellites=instance.satellites, users=[u],
+                        tasks=tasks_u, observations=obs_u)
+    Mu = greedy_schedule_P_u(inst_u, u_id)
+    old_reward = plan_reward({"temp": Mu}, u_id)
     
-    inst_u = ESOPInstance(
-        nb_satellites=instance.nb_satellites, nb_users=1, nb_tasks=len(tasks_u),
-        horizon=instance.horizon, satellites=instance.satellites, users=[u], 
-        tasks=tasks_u, observations=obs_u
-    )
-    
-    old_plan_reward = safe_plan_reward(all_user_plans, u_id)
-    
-    # Instance AVEC r : P[u] ∪ P[r]
+    # tâches/obs de u + r
     tasks_u_r = tasks_u + [request]
     obs_u_r = obs_u + [o for o in instance.observations if o.task_id == request.tid]
+    inst_u_r = ESOPInstance(nb_satellites=instance.nb_satellites, nb_users=1, nb_tasks=len(tasks_u_r),
+                            horizon=instance.horizon, satellites=instance.satellites, users=[u],
+                            tasks=tasks_u_r, observations=obs_u_r)
+    new_plan = greedy_schedule_P_u(inst_u_r, u_id)
+    new_reward = plan_reward({"temp": new_plan}, u_id)
     
-    inst_u_r = ESOPInstance(
-        nb_satellites=instance.nb_satellites, nb_users=1, nb_tasks=len(tasks_u_r),
-        horizon=instance.horizon, satellites=instance.satellites, users=[u], 
-        tasks=tasks_u_r, observations=obs_u_r
-    )
-    
-    new_plan_u_r = greedy_schedule_P_u(inst_u_r, u_id)
-    new_plan_reward = safe_plan_reward({"temp": new_plan_u_r}, u_id)
-    bid_value = new_plan_reward - old_plan_reward
-    
-    schedule_r = safe_get_schedule({"temp": new_plan_u_r}, request.tid)
+    bid_value = new_reward - old_reward # Gain marginal LOCAL
+    schedule_r = get_schedule({"temp": new_plan}, request.tid)
     return bid_value, schedule_r
 
-def integrate_observation(current_plan: Dict[str, List[Tuple[Observation, int]]], 
-                         new_obs_schedule: Tuple[Observation, int], 
-                         instance: ESOPInstance) -> Dict[str, List[Tuple[Observation, int]]]:
-    """Opérateur ⊕ : refait greedy sur instance mise à jour (Ligne 8 des algos)"""
+def integrate_observation(current_plan, new_obs_schedule, instance):
+    """
+        Opérateur (+) (cercle) : refait greedy sur instance mise à jour
+    """
     obs, t_start = new_obs_schedule
     u_id = obs.owner
-    
     u = next((user for user in instance.users if user.uid == u_id), None)
     if u is None:
         return current_plan
-    
+
     tasks_u = [t for t in instance.tasks if t.owner == u_id]
     obs_u = [o for o in instance.observations if o.owner == u_id and o.task_id != obs.task_id]
-    
-    inst_u = ESOPInstance(
-        nb_satellites=instance.nb_satellites, nb_users=1, nb_tasks=len(tasks_u),
-        horizon=instance.horizon, satellites=instance.satellites, users=[u], 
-        tasks=tasks_u, observations=obs_u
-    )
-    
+
+    inst_u = ESOPInstance(nb_satellites=instance.nb_satellites, nb_users=1, nb_tasks=len(tasks_u),
+                        horizon=instance.horizon, satellites=instance.satellites, users=[u],
+                        tasks=tasks_u, observations=obs_u)
+
     return greedy_schedule_P_u(inst_u, u_id)
 
-# =============================================================================
-# PSI - Algorithme 2 de l'article (COMMENTÉ LIGNE PAR LIGNE)
-# =============================================================================
+############ PSI
+def psi_solve(instance):
+    """
+        Algorithme PSI de l'article
+        retourne (plans, nb_messages, comm_load)
+    """
+    nb_messages = 0
+    comm_load = 0
 
-def psi_solve(instance: ESOPInstance) -> Dict[str, Dict[str, List[Tuple[Observation, int]]]]:
-    """
-    PSI - Algorithme 2 EXACT de l'article (PARALLEL Single-Item)
-    
-    DIFFÉRENCE avec SSI: 
-    - PSI: Calcule TOUS les bids en parallèle au début, trie, puis attribue avec mises à jour
-    - SSI: Calcule les bids séquentiellement tâche par tâche avec mises à jour
-    
-    PSI est PLUS LENT car il calcule |R| × |U| bids d'un coup (coût computationnel élevé)
-    même si conceptuellement c'est "parallèle".
-    
-    Data: An EOSCSP P = ⟨S, U, R, O⟩
-    Result: An assignment M
-    """
-    # Ligne 1-2: Initialisation
-    exclusive_users = [u for u in instance.users if u.uid != "u0"]
-    user_plans = {u.uid: greedy_schedule_P_u(instance, u.uid) for u in exclusive_users}
     Mu0 = {}
-    
-    # Ligne 3-4: TOUS les bids calculés EN PARALLÈLE (coût: |R| × |U| appels à bid())
+    exclusive_users = [u for u in instance.users if u.uid != "u0"]
+
+    # Résolution locale initiale pour chaque user
+    initial_plans = {u.uid: greedy_schedule_P_u(instance, u.uid) for u in exclusive_users}
+
+    # Requêtes du central (items)
     u0_tasks = [t for t in instance.tasks if t.owner == "u0"]
-    all_bids = []
-    
+
+    # Annonce globale des items à tous les exclusifs
+    # 1 message par user contenant la liste complète des items (hyp. choisie)
+    for u in exclusive_users:
+        nb_messages += 1
+        comm_load += sys.getsizeof((u.uid, u0_tasks))
+
+    allocations = []
+
+    # Bidding en parallèle sur chaque requête
     for r in u0_tasks:
-        bids_r = {u.uid: bid(u.uid, instance, r, user_plans) for u in exclusive_users}
-        
+        bids_r = {}
+        for u in exclusive_users:
+            b_val, sigma = bid(u.uid, instance, r)
+            bids_r[u.uid] = (b_val, sigma)
+            # 1 message bid (valeur + éventuellement schedule)
+            nb_messages += 1
+            comm_load += sys.getsizeof((r.tid, u.uid, b_val))
+
         if not bids_r:
             continue
-            
+
         winner_id = max(bids_r, key=lambda uid: bids_r[uid][0])
         winner_bid, sigma_w = bids_r[winner_id]
-        
-        if sigma_w is None or winner_bid <= 0:
-            continue
-        
-        all_bids.append((winner_bid, r.tid, winner_id, sigma_w))
-    
-    # Ligne 5: Trier par bid décroissant
-    all_bids.sort(key=lambda x: (-x[0], x[1]))
-    
-    # Ligne 6-8: Attribution avec mises à jour des plans
-    for bid_value, task_id, winner_id, sigma_w in all_bids:
+
+        if sigma_w is not None and winner_bid > 0:
+            allocations.append((winner_bid, r.tid, winner_id, sigma_w))
+
+    # determination globale du winner
+    allocations.sort(key=lambda x: (-x[0], x[1]))
+    for _, task_id, winner_id, sigma_w in allocations:
         obs, t = sigma_w
         sid = obs.satellite
         Mu0.setdefault(sid, []).append(sigma_w)
-        
-        # Mise à jour du plan du gagnant (ligne 8 de l'algo)
-        user_plans[winner_id] = integrate_observation(
-            user_plans[winner_id], sigma_w, instance
-        )
-    
-    # Ligne 9: Planification finale de u0
+        # notif. au gagnant
+        nb_messages += 1
+        comm_load += sys.getsizeof((task_id, winner_id, sigma_w))
+
+    # Plan de u0 avec les obs fixées
     inst_u0_fixed = create_instance_with_fixed_observations(instance, Mu0)
     final_u0_plan = greedy_schedule(inst_u0_fixed).get("u0", {})
-    
-    # Ligne 10: return ∪u∈U Mu
-    return {**user_plans, "u0": final_u0_plan}
 
-# =============================================================================
-# SSI - Algorithme 3 de l'article (COMMENTÉ LIGNE PAR LIGNE)
-# =============================================================================
+    return {**initial_plans, "u0": final_u0_plan}, nb_messages, comm_load
 
-def ssi_solve(instance: ESOPInstance, sort_key=lambda r: r.t_end) -> Dict[str, Dict[str, List[Tuple[Observation, int]]]]:
+##### SSI
+def ssi_solve(instance, sort_key=lambda r: r.t_end):
     """
-    SSI - Algorithme 3 EXACT de l'article
-    
-    Data: An EOSCSP P = ⟨S, U, R, O⟩
-    Result: An assignment M
+        Algorithme SSI.
     """
-    # Ligne 1: Mu0 ← ∅
-    # Ligne 2: for each u ∈ Uex do concurrently Mu ← solve(P[u])
-    exclusive_users = [u for u in instance.users if u.uid != "u0"]
-    user_plans = {u.uid: greedy_schedule_P_u(instance, u.uid) for u in exclusive_users}
+    nb_messages = 0
+    comm_load = 0
+
     Mu0 = {}
-    
-    # Ligne 3: for each r ∈ sorted(R) do
+    exclusive_users = [u for u in instance.users if u.uid != "u0"]
+
+    # Plans locaux initiaux
+    user_plans = {u.uid: greedy_schedule_P_u(instance, u.uid) for u in exclusive_users}
+
+    # Requêtes de u0 triées
     u0_tasks = sorted([t for t in instance.tasks if t.owner == "u0"], key=sort_key)
-    
-    # Lignes 4-5: for each u ∈ Uex do Bu[r], σu[r] ← bid(r, Mu) // send Bu[r], σu[r] to u0
+
+    # Boucle séquentielle sur les requêtes
     for r in u0_tasks:
-        bids_r = {u.uid: bid(u.uid, instance, r, user_plans) for u in exclusive_users}
-        
+        for u in exclusive_users: # annonce de la requête r à chaque user
+            nb_messages += 1
+            comm_load += sys.getsizeof((u.uid, r.tid))
+
+        bids_r = {}
+        for u in exclusive_users:
+            b_val, sigma = bid(u.uid, instance, r)
+            bids_r[u.uid] = (b_val, sigma)
+            nb_messages += 1
+            comm_load += sys.getsizeof((r.tid, u.uid, b_val))
+
         if not bids_r:
             continue
-            
-        # Ligne 6: w ← arg maxu∈Uex {Bu[r]}
+
         winner_id = max(bids_r, key=lambda uid: bids_r[uid][0])
         winner_bid, sigma_w = bids_r[winner_id]
-        
+
         if sigma_w is None or winner_bid <= 0:
             continue
-            
-        # Ligne 7: Mu0 ← Mu0 ∪ {σw[r]}
+
         obs, t = sigma_w
         sid = obs.satellite
         Mu0.setdefault(sid, []).append(sigma_w)
-        
-        # Ligne 8: Mw ← Mw ⊕ σw[r] // send Mw[r] to w
-        user_plans[winner_id] = integrate_observation(
-            user_plans[winner_id], sigma_w, instance
-        )
-    
-    # Ligne 9: Mu0 ← solve(P[u0|Mu0])
+
+        # màj du plan gagnant
+        user_plans[winner_id] = integrate_observation(user_plans[winner_id], sigma_w, instance)
+
+        # notif winner
+        nb_messages += 1
+        comm_load += sys.getsizeof((r.tid, winner_id, sigma_w))
+
+    # et plan final de u0
     inst_u0_fixed = create_instance_with_fixed_observations(instance, Mu0)
     final_u0_plan = greedy_schedule(inst_u0_fixed).get("u0", {})
-    
-    # Ligne 10: return ∪u∈U Mu
-    return {**user_plans, "u0": final_u0_plan}
 
-# =============================================================================
-# 🆕 REGRET AUCTION (NOUVEAU)
-# =============================================================================
+    return {**user_plans, "u0": final_u0_plan}, nb_messages, comm_load
 
-def regret_bid(u_id: str, instance: ESOPInstance, request: Task, 
-               all_user_plans: Dict[str, Dict[str, List[Tuple[Observation, int]]]],
-               history_bids: Dict[str, float], alpha: float = 0.1) -> Tuple[float, Optional[Tuple[Observation, int]]]:
+######## REGRET AUCTION (extension SSI)
+def regret_bid(u_id, instance, request, all_user_plans, history_bids, alpha = 0.1):
     """
-    Enchère par regret : bid = gain_marginal + α * regret_passé
-    - Favorise les utilisateurs qui ont souvent été "frustrés" (bons bids perdus)
+        Enchère par regret : bid = gain_marginal + alpha * regret_passé
     """
-    # Bid classique (gain marginal)
-    classic_bid, schedule = bid(u_id, instance, request, all_user_plans)
-    
-    # Regret passé : moyenne des enchères perdues (non-gagnées)
+    classic_bid, schedule = bid(u_id, instance, request)
     past_regret = history_bids.get(u_id, 0.0)
-    
-    # Enchère finale = bid actuel + bonus regret
     regret_bonus = alpha * past_regret
     final_bid = classic_bid + regret_bonus
-    
     return final_bid, schedule
 
-def regret_auction_solve(instance: ESOPInstance, sort_key=lambda r: r.t_end, 
-                        alpha: float = 0.1, n_rounds: int = 3) -> Dict[str, Dict[str, List[Tuple[Observation, int]]]]:
+def regret_auction_solve(instance, sort_key=lambda r: r.t_end, alpha = 0.1, n_rounds = 3):
     """
-    Auction par regret sur n_rounds itérations
-    - Chaque round : enchères regret → allocation → mise à jour historique
-    - Converge vers une allocation plus équilibrée/équitable
+        Regret Auction : extension multi-rounds d'SSI
     """
+    nb_messages = 0 # toujours sous hyp. choisies car manque d'infos dans l'article.
+    comm_load = 0
+
     exclusive_users = [u for u in instance.users if u.uid != "u0"]
-    
-    # Historique des regrets (enchères perdues)
-    history_bids = {u.uid: 0.0 for u in exclusive_users}
-    
+    history_bids = {u.uid: 0.0 for u in exclusive_users} # historique des regrets
+
     # Plans initiaux
     user_plans = {u.uid: greedy_schedule_P_u(instance, u.uid) for u in exclusive_users}
-    best_plans = user_plans.copy()
-    best_score = 0
-    
-    # Requêtes u0 triées
+    best_plans = deepcopy(user_plans)
+    best_score = 0.0
+
     u0_tasks = sorted([t for t in instance.tasks if t.owner == "u0"], key=sort_key)
-    
+
     for round_num in range(n_rounds):
-        print(f"🔄 Regret Auction - Round {round_num+1}/{n_rounds}")
         Mu0 = {}
-        
-        # Enchères séquentielles avec regret
+
         for r in u0_tasks:
+            # Annonce r + info regret aux users
+            for u in exclusive_users:
+                nb_messages += 1
+                comm_load += sys.getsizeof((u.uid, r.tid, history_bids[u.uid]))
+
             bids_r = {}
             for u in exclusive_users:
-                bid_val, schedule = regret_bid(u.uid, instance, r, user_plans, 
-                                            history_bids, alpha)
+                bid_val, schedule = regret_bid(u.uid, instance, r, user_plans, history_bids, alpha)
                 bids_r[u.uid] = (bid_val, schedule)
-            
+                nb_messages += 1
+                comm_load += sys.getsizeof((r.tid, u.uid, bid_val))
+
             if not bids_r:
                 continue
-                
-            # Gagnant (max bid regret)
+
             winner_id = max(bids_r, key=lambda uid: bids_r[uid][0])
             winner_bid, sigma_w = bids_r[winner_id]
-            
-            if sigma_w is None or (winner_bid - history_bids[winner_id]) <= 0:
+
+            marginal_bid = winner_bid - history_bids.get(winner_id, 0.0)
+            if sigma_w is None or marginal_bid <= 0:
                 continue
-                
-            # Allocation
+
             obs, t = sigma_w
             sid = obs.satellite
             Mu0.setdefault(sid, []).append(sigma_w)
-            
-            # Mise à jour plan gagnant
-            user_plans[winner_id] = integrate_observation(
-                user_plans[winner_id], sigma_w, instance
-            )
-            
-            # 🔄 MISE À JOUR REGRET : les perdants accumulent du regret
-            for loser_id, (loser_bid, _) in bids_r.items():
+
+            user_plans[winner_id] = integrate_observation(user_plans[winner_id], sigma_w, instance)
+
+            # notification gagnant
+            nb_messages += 1
+            comm_load += sys.getsizeof((r.tid, winner_id, sigma_w))
+
+            for loser_id, (loser_bid, _) in bids_r.items(): # màj regret perdants
                 if loser_id != winner_id:
-                    history_bids[loser_id] += loser_bid * 0.1  # Regret pondéré
-        
-        # Évaluation du round
+                    history_bids[loser_id] += loser_bid * 0.1
+
         inst_u0_fixed = create_instance_with_fixed_observations(instance, Mu0)
         final_u0_plan = greedy_schedule(inst_u0_fixed).get("u0", {})
         round_plans = {**user_plans, "u0": final_u0_plan}
-        
-        round_score = sum(sum(sum(obs.reward for obs, _ in obslist or []) 
-                             for obslist in sat_plans.values()) 
-                         for sat_plans in round_plans.values())
-        
-        print(f"   Round score: {round_score:.1f}")
-        
-        # Garder meilleur plan vu
+        round_score = sum(sum(sum(obs.reward for obs, _ in (obslist or [])) for obslist in sat_plans.values()) for sat_plans in round_plans.values())
+
         if round_score > best_score:
             best_score = round_score
             best_plans = deepcopy(round_plans)
-    
-    print(f"✅ Regret Auction final score: {best_score:.1f}")
-    return best_plans
 
-# =============================================================================
-# TEST COMPARATIF
-# =============================================================================
-
-"""
-Test complet des 3 algorithmes :
-1. PSI : parallèle (Algo 2)
-2. SSI : séquentiel (Algo 3) 
-3. Regret : multi-rounds équitable
-"""
+    return best_plans, nb_messages, comm_load
